@@ -1,0 +1,6 @@
+PySide6
+llama-cpp-python
+psutil
+sentence-transformers
+numpy
+requests

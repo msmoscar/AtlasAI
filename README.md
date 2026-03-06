@@ -36,8 +36,9 @@ This repository contains **two AI assistants**:
 
 ```bash
 # Clone this repository
-git clone https://github.com/yourusername/ai-project.git
-cd ai-project
+git clone https://github.com/mummypoop/atlasai.git
+cd atlasai
+
 
 # Install dependencies
 pip install -r requirements.txt

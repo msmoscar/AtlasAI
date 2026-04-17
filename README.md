@@ -59,18 +59,25 @@ python3 Atlas.py --model /path/to/model.gguf
 - `!memory` — display current saved memory entries
 - `!clear` — clear saved memory
 - `!remember <note>` — save a manual note to memory
-- `!savechat` — save the full chat history to disk
-- `!chatlog` — show the saved chat history location
+- `!savechat <name>` — save the current chat to a named file (1-3 words)
+- `!loadchat <name>` — load a previously saved chat by name
+- `!listchats` — list all saved chats
+- `!chatlog` — show the saved chat directory location
 - `!loadmodel <path>` — hot swap to a new GGUF model without restarting
 - `!model <path>` — alias for `!loadmodel`
 - `!search <query>` — perform a DuckDuckGo search and add the result to memory
+
+Atlas now automatically includes web search results for normal queries, so it can use fresh information when needed.
+
+- Place `instructions.md` in the repo root to give Atlas per-prompt instructions.
+- Place `tools.md` in the repo root to document available tools and APIs.
 
 ## Notes
 
 - Memory is stored at `~/.AtlasAI/memory.jsonl`
 - Default search path for models is `~/Documents/Ai_Models/`
-- The GUI includes a File menu for loading a new model and saving chat history
-- Full chat history is saved to `~/.AtlasAI/chat_history.jsonl`
+- The GUI includes a File menu for loading models, saving named chats, and loading saved chats
+- Named chat files are stored in `~/.AtlasAI/chats/` and use 1-3 word names
 - The GUI window includes a debug panel for prompt and model output inspection
 
 ## Troubleshooting

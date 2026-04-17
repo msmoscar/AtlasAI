@@ -42,13 +42,15 @@ try:
         QTextEdit,
         QDialog,
         QFileDialog,
+        QInputDialog,
     )
     _HAS_QT = True
 except Exception:
-    Qt = QTimer = Signal = QThread = QApplication = QWidget = QVBoxLayout = QHBoxLayout = QLabel = QLineEdit = QPushButton = QScrollArea = QMenuBar = QAction = QTextEdit = QDialog = None
+    Qt = QTimer = Signal = QThread = QApplication = QWidget = QVBoxLayout = QHBoxLayout = QLabel = QLineEdit = QPushButton = QScrollArea = QMenuBar = QAction = QTextEdit = QDialog = QFileDialog = QInputDialog = None
     _HAS_QT = False
 
 MEMORY_DIR = os.path.join(pathlib.Path.home(), ".AtlasAI")
+CHAT_LOG_DIR = os.path.join(MEMORY_DIR, "chats")
 MEMORY_FILE = os.path.join(MEMORY_DIR, "memory.jsonl")
 CHAT_LOG_FILE = os.path.join(MEMORY_DIR, "chat_history.jsonl")
 MODEL_SEARCH_DIR = os.path.expanduser("~/Documents/Ai_Models/")
@@ -70,6 +72,9 @@ SYSTEM_PROMPT = (
     "You are Atlas, a high-performance reasoning assistant. "
     "Your answers should feel polished, confident, and trustworthy like a leading AI service. "
     "Always prioritize accuracy, avoid hallucination, and keep your response concise. "
+    "You have access to web search results for current information. "
+    "Use the web results when they help answer the user's question, especially for recent events, news, or factual queries. "
+    "If the web information is not useful, you may ignore it. "
     "When solving problems, think through the steps carefully and then respond with a short answer followed by an optional brief explanation. "
     "If you are uncertain, say That you don't know rather than inventing details."
 )
@@ -78,6 +83,8 @@ PROMPT_TEMPLATE = (
     "{system}\n\n"
     "Context:\n{context}\n\n"
     "{recent_section}"
+    "{instructions_section}"
+    "{tools_section}"
     "User request:\n{user}\n\n"
     "{web_section}"
     "Instructions:\n"
@@ -88,6 +95,23 @@ PROMPT_TEMPLATE = (
 )
 
 READONLY_COMMANDS = ["!quit", "!exit", "!help", "!memory", "!clear"]
+DEFAULT_INSTRUCTIONS_FILENAME = "instructions.md"
+DEFAULT_TOOLS_FILENAME = "tools.md"
+
+
+def load_markdown_file(filename: str) -> str:
+    search_paths = [
+        os.path.join(os.getcwd(), filename),
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), filename),
+    ]
+    for path in search_paths:
+        if os.path.exists(path):
+            try:
+                with open(path, "r", encoding="utf-8") as fh:
+                    return fh.read().strip()
+            except Exception:
+                return ""
+    return ""
 
 
 def find_gguf_models(search_dir: str = MODEL_SEARCH_DIR) -> List[str]:
@@ -347,6 +371,87 @@ class AtlasAI:
             repeat_penalty=1.05,
         )
 
+    def _sanitize_chat_name(self, name: str) -> Optional[str]:
+        if not name:
+            return None
+        cleaned = name.strip()
+        if not re.fullmatch(r"[A-Za-z0-9]+(?: [A-Za-z0-9]+){0,2}", cleaned):
+            return None
+        return cleaned.lower().replace(" ", "_")
+
+    def _chat_history_filepath(self, sanitized_name: str) -> str:
+        return os.path.join(CHAT_LOG_DIR, f"{sanitized_name}.jsonl")
+
+    def save_chat_history(self, name: Optional[str] = None) -> str:
+        os.makedirs(CHAT_LOG_DIR, exist_ok=True)
+        if name:
+            sanitized = self._sanitize_chat_name(name)
+            if not sanitized:
+                return "Chat name must be 1-3 words containing only letters and numbers."
+            filepath = self._chat_history_filepath(sanitized)
+        else:
+            filepath = os.path.join(CHAT_LOG_DIR, "last_session.jsonl")
+
+        with open(filepath, "w", encoding="utf-8") as fh:
+            for entry in self.history:
+                fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+        if name:
+            return f"Chat saved as '{name}' in {filepath}."
+        return f"Chat saved to {filepath}."
+
+    def load_chat_history(self, name: str) -> str:
+        sanitized = self._sanitize_chat_name(name)
+        if not sanitized:
+            return "Chat name must be 1-3 words containing only letters and numbers."
+        filepath = self._chat_history_filepath(sanitized)
+        if not os.path.exists(filepath):
+            return f"Saved chat '{name}' not found."
+
+        loaded: List[Dict[str, str]] = []
+        with open(filepath, "r", encoding="utf-8") as fh:
+            for line in fh:
+                try:
+                    entry = json.loads(line.strip())
+                    if isinstance(entry, dict) and "role" in entry and "message" in entry:
+                        loaded.append(entry)
+                except json.JSONDecodeError:
+                    continue
+
+        self.history = loaded
+        return f"Loaded chat '{name}' with {len(self.history)} messages."
+
+    def load_chat_history_file(self, path: str) -> str:
+        if not os.path.exists(path):
+            return f"Chat file not found: {path}"
+
+        loaded: List[Dict[str, str]] = []
+        with open(path, "r", encoding="utf-8") as fh:
+            for line in fh:
+                try:
+                    entry = json.loads(line.strip())
+                    if isinstance(entry, dict) and "role" in entry and "message" in entry:
+                        loaded.append(entry)
+                except json.JSONDecodeError:
+                    continue
+
+        self.history = loaded
+        return f"Loaded chat file {os.path.basename(path)} with {len(self.history)} messages."
+
+    def list_chat_history(self) -> str:
+        if not os.path.isdir(CHAT_LOG_DIR):
+            return "No saved chats found."
+
+        files = [f for f in os.listdir(CHAT_LOG_DIR) if f.endswith(".jsonl")]
+        if not files:
+            return "No saved chats found."
+
+        lines = ["Saved chats:"]
+        for filename in sorted(files):
+            name = os.path.splitext(filename)[0].replace("_", " ")
+            lines.append(f"- {name}")
+        return "\n".join(lines)
+
     def load_model(self, model_path: str) -> str:
         if not model_path:
             return "Usage: !loadmodel /path/to/model.gguf"
@@ -383,10 +488,24 @@ class AtlasAI:
             note = user[len("!remember "):].strip()
             self.memory.add(note, tag="manual")
             return "Saved to memory."
+        if lowered.startswith("!savechat "):
+            name = user.split(maxsplit=1)[1].strip() if len(user.split(maxsplit=1)) > 1 else ""
+            if not name:
+                return "Usage: !savechat <name> (1-3 words)"
+            return self.save_chat_history(name)
         if lowered == "!savechat":
-            return self.save_chat_history()
+            return "Usage: !savechat <name> (1-3 words)"
+        if lowered == "!listchats":
+            return self.list_chat_history()
+        if lowered.startswith("!loadchat "):
+            name = user.split(maxsplit=1)[1].strip() if len(user.split(maxsplit=1)) > 1 else ""
+            if not name:
+                return "Usage: !loadchat <name>"
+            return self.load_chat_history(name)
+        if lowered == "!loadchat":
+            return "Usage: !loadchat <name>"
         if lowered == "!chatlog":
-            return f"Chat log saved at: {CHAT_LOG_FILE}"
+            return f"Chat log saved at: {CHAT_LOG_DIR}"
         if lowered.startswith("!loadmodel ") or lowered.startswith("!model "):
             model_path = user.split(maxsplit=1)[1].strip() if len(user.split(maxsplit=1)) > 1 else ""
             return self.load_model(model_path)
@@ -412,6 +531,10 @@ class AtlasAI:
         context = "\n".join(retrieved) if retrieved else "No relevant memory found."
         recent_context = format_conversation(self.history)
         recent_section = "Recent conversation:\n" + recent_context + "\n\n" if recent_context else ""
+        instructions = load_markdown_file(DEFAULT_INSTRUCTIONS_FILENAME)
+        tools = load_markdown_file(DEFAULT_TOOLS_FILENAME)
+        instructions_section = "Instructions file:\n" + instructions + "\n\n" if instructions else ""
+        tools_section = "Tools file:\n" + tools + "\n\n" if tools else ""
         web_section = ""
         if web_summary or web_sources:
             web_section = "Web search summary:\n" + web_summary.strip() + "\n\n"
@@ -423,6 +546,8 @@ class AtlasAI:
             user=user,
             web_section=web_section,
             recent_section=recent_section,
+            instructions_section=instructions_section,
+            tools_section=tools_section,
         )
 
     def _prepare_query(self, user: str) -> tuple[str, str, str]:
@@ -431,6 +556,7 @@ class AtlasAI:
         query = user
         if user.lower().startswith("!search "):
             query = user[len("!search "):].strip()
+        if not query.startswith("!"):
             search_data = duckduckgo_search(query)
             web_summary = search_data.get("summary", "")
             sources = search_data.get("sources", [])
@@ -715,9 +841,16 @@ if _HAS_QT:
             self.action_load_model = QAction("Load Model...", self)
             self.action_load_model.triggered.connect(self._on_load_model)
             file_menu.addAction(self.action_load_model)
-            self.action_save_chat = QAction("Save Chat History", self)
-            self.action_save_chat.triggered.connect(self._on_save_chat)
+            self.action_save_chat = QAction("Save Chat As...", self)
+            self.action_save_chat.triggered.connect(self._on_save_chat_as)
             file_menu.addAction(self.action_save_chat)
+            self.action_load_chat = QAction("Load Chat...", self)
+            self.action_load_chat.triggered.connect(self._on_load_chat)
+            file_menu.addAction(self.action_load_chat)
+            file_menu.addSeparator()
+            self.action_save_chat_history = QAction("Save Current Chat", self)
+            self.action_save_chat_history.triggered.connect(self._on_save_chat)
+            file_menu.addAction(self.action_save_chat_history)
             debug_menu = menubar.addMenu("Debug")
             self.action_show_debug = QAction("Show Debug Panel", self)
             self.action_show_debug.setCheckable(True)
@@ -796,8 +929,30 @@ if _HAS_QT:
             self.assistant.history.append({"role": "assistant", "message": response})
             self.assistant.save_chat_history()
 
+        def _on_save_chat_as(self) -> None:
+            name, ok = QInputDialog.getText(self, "Save Chat As", "Enter chat name (1-3 words):")
+            if not ok or not name.strip():
+                return
+            response = self.assistant.save_chat_history(name.strip())
+            self._append_chat("Atlas", response)
+            self.assistant.history.append({"role": "assistant", "message": response})
+
         def _on_save_chat(self) -> None:
             response = self.assistant.save_chat_history()
+            self._append_chat("Atlas", response)
+            self.assistant.history.append({"role": "assistant", "message": response})
+
+        def _on_load_chat(self) -> None:
+            os.makedirs(CHAT_LOG_DIR, exist_ok=True)
+            path, _ = QFileDialog.getOpenFileName(
+                self,
+                "Load Saved Chat",
+                CHAT_LOG_DIR,
+                "Chat Files (*.jsonl);;All Files (*)",
+            )
+            if not path:
+                return
+            response = self.assistant.load_chat_history_file(path)
             self._append_chat("Atlas", response)
             self.assistant.history.append({"role": "assistant", "message": response})
 

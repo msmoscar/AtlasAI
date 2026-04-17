@@ -12,12 +12,12 @@ from typing import Any, Dict, List, Optional
 try:
     import numpy as np
 except ImportError:
-    raise ImportError("AtlasAI.py requires numpy. Install it with: pip install numpy")
+    raise ImportError("Atlas requires numpy. Install it with: pip install numpy")
 
 try:
     from llama_cpp import Llama
 except ImportError:
-    raise ImportError("AtlasAI.py requires llama-cpp-python. Install it with: pip install llama-cpp-python")
+    raise ImportError("Atlas requires llama-cpp-python. Install it with: pip install llama-cpp-python")
 
 try:
     from sentence_transformers import SentenceTransformer
@@ -28,6 +28,7 @@ except Exception:
 
 try:
     from PySide6.QtCore import Qt, QTimer, Signal, QThread
+    from PySide6.QtGui import QAction
     from PySide6.QtWidgets import (
         QApplication,
         QWidget,
@@ -38,9 +39,9 @@ try:
         QPushButton,
         QScrollArea,
         QMenuBar,
-        QAction,
         QTextEdit,
         QDialog,
+        QFileDialog,
     )
     _HAS_QT = True
 except Exception:
@@ -49,6 +50,7 @@ except Exception:
 
 MEMORY_DIR = os.path.join(pathlib.Path.home(), ".AtlasAI")
 MEMORY_FILE = os.path.join(MEMORY_DIR, "memory.jsonl")
+CHAT_LOG_FILE = os.path.join(MEMORY_DIR, "chat_history.jsonl")
 MODEL_SEARCH_DIR = os.path.expanduser("~/Documents/Ai_Models/")
 EMBED_MODEL = "all-MiniLM-L6-v2"
 EMBED_DIM = 384
@@ -345,6 +347,53 @@ class AtlasAI:
             repeat_penalty=1.05,
         )
 
+    def load_model(self, model_path: str) -> str:
+        if not model_path:
+            return "Usage: !loadmodel /path/to/model.gguf"
+
+        if os.path.isdir(model_path):
+            models = find_gguf_models(model_path)
+            if not models:
+                return f"No GGUF models found in directory: {model_path}"
+            model_path = models[0]
+
+        if not os.path.exists(model_path):
+            return f"Model path not found: {model_path}"
+
+        self.model_path = model_path
+        self.llm = self._load_model(model_path)
+        return f"Loaded model: {self.model_path}"
+
+    def save_chat_history(self) -> str:
+        os.makedirs(os.path.dirname(CHAT_LOG_FILE), exist_ok=True)
+        with open(CHAT_LOG_FILE, "w", encoding="utf-8") as fh:
+            for entry in self.history:
+                fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        return f"Chat history saved to {CHAT_LOG_FILE}"
+
+    def handle_command(self, user: str) -> Optional[str]:
+        lowered = user.lower().strip()
+        if lowered == "!help":
+            return self._print_help()
+        if lowered == "!memory":
+            return self.show_memory()
+        if lowered == "!clear":
+            return self.clear_memory()
+        if lowered.startswith("!remember "):
+            note = user[len("!remember "):].strip()
+            self.memory.add(note, tag="manual")
+            return "Saved to memory."
+        if lowered == "!savechat":
+            return self.save_chat_history()
+        if lowered == "!chatlog":
+            return f"Chat log saved at: {CHAT_LOG_FILE}"
+        if lowered.startswith("!loadmodel ") or lowered.startswith("!model "):
+            model_path = user.split(maxsplit=1)[1].strip() if len(user.split(maxsplit=1)) > 1 else ""
+            return self.load_model(model_path)
+        if lowered in ("!loadmodel", "!model"):
+            return "Usage: !loadmodel /path/to/model.gguf"
+        return None
+
     def _print_startup_info(self) -> None:
         print("AtlasAI is ready.")
         print(f"Model: {self.model_path}")
@@ -354,6 +403,8 @@ class AtlasAI:
             print("Embedding: fallback mode")
         else:
             print(f"Embedding: {self.memory.embed_model_name}")
+        if not _HAS_QT:
+            print("GUI support unavailable. Install PySide6 or run with --cli for console mode.")
         print("Type '!help' for commands. Start typing your question.")
         print("---")
 
@@ -546,35 +597,36 @@ class AtlasAI:
             if lower in ("!quit", "!exit"):
                 print("Goodbye.")
                 break
-            if lower == "!help":
-                self._print_help()
-                continue
-            if lower == "!memory":
-                print(self.show_memory())
-                continue
-            if lower == "!clear":
-                print(self.clear_memory())
-                continue
-            if lower.startswith("!remember "):
-                note = user[len("!remember "):].strip()
-                self.memory.add(note, tag="manual")
-                print("Saved to memory.")
+            if lower in ("!quit", "!exit"):
+                print("Goodbye.")
+                break
+
+            self.history.append({"role": "user", "message": user})
+            command_response = self.handle_command(user)
+            if command_response is not None:
+                print(command_response)
+                self.history.append({"role": "assistant", "message": command_response})
+                self.save_chat_history()
                 continue
 
             answer = self.respond(user)
             print(f"Atlas: {answer}\n")
-            self.history.append({"role": "user", "message": user})
             self.history.append({"role": "assistant", "message": answer})
             self.add_memory_if_relevant(user, answer)
+            self.save_chat_history()
 
-    def _print_help(self) -> None:
-        print(
+    def _print_help(self) -> str:
+        return (
             "Commands:\n"
-            "  !help       Show this command list\n"
-            "  !memory     Show recent memory entries\n"
-            "  !clear      Clear all saved memory\n"
-            "  !remember X Save a note to memory\n"
-            "  !exit       Quit the assistant\n"
+            "  !help         Show this command list\n"
+            "  !memory       Show recent memory entries\n"
+            "  !clear        Clear all saved memory\n"
+            "  !remember X   Save a note to memory\n"
+            "  !savechat     Save the full chat history to disk\n"
+            "  !chatlog      Show saved chat log location\n"
+            "  !loadmodel X  Load a new GGUF model at runtime\n"
+            "  !model X      Alias for !loadmodel\n"
+            "  !exit         Quit the assistant\n"
         )
 
 
@@ -599,9 +651,12 @@ if _HAS_QT:
         def __init__(self, role: str, text: str, details: str = ""):
             super().__init__()
             layout = QVBoxLayout(self)
-            role_label = QLabel(f"<b>{role}</b>")
-            role_label.setTextFormat(Qt.RichText)
-            message_label = QLabel(text.replace("\n", "<br>"))
+            role_label = QLabel(role)
+            role_label.setStyleSheet("color: #94a3b8; font-weight: 700; margin-bottom: 4px;")
+            message_label = QLabel(
+                f"<div style='font-size:14px; color:#e2e8f0; line-height:1.4;'>{text.replace('\n', '<br>')}</div>"
+            )
+            message_label.setTextFormat(Qt.RichText)
             message_label.setWordWrap(True)
             layout.addWidget(role_label)
             layout.addWidget(message_label)
@@ -613,8 +668,9 @@ if _HAS_QT:
                 self.toggle_button.clicked.connect(self._toggle_details)
                 layout.addWidget(self.toggle_button)
                 layout.addWidget(self.details_label)
+            bubble_bg = "#1e293b" if role.lower() == "atlas" else "#111827"
             self.setStyleSheet(
-                "QWidget { border: 1px solid #888; border-radius: 8px; margin: 6px; padding: 8px; }"
+                f"QWidget {{ border-radius: 16px; background: {bubble_bg}; margin: 4px; padding: 10px; }}"
             )
 
         def _toggle_details(self) -> None:
@@ -628,10 +684,40 @@ if _HAS_QT:
             super().__init__()
             self.assistant = assistant
             self.setWindowTitle("Atlas AI")
-            self.setGeometry(120, 80, 940, 700)
+            self.setGeometry(120, 80, 760, 520)
+            self.setMinimumSize(640, 460)
+            self.setStyleSheet(
+                "QWidget { background: #0f172a; color: #e2e8f0; }"
+                "QPushButton { background: #2563eb; color: #f8fafc; border-radius: 8px; padding: 8px 12px; }"
+                "QPushButton:hover { background: #3b82f6; }"
+                "QLineEdit { background: #1e293b; color: #f8fafc; border: 1px solid #334155; border-radius: 12px; padding: 8px; }"
+                "QLabel { color: #e2e8f0; }"
+                "QMenuBar { background: #0f172a; color: #cbd5e1; }"
+                "QMenuBar::item:selected { background: #334155; }"
+            )
 
             outer_layout = QVBoxLayout(self)
+            outer_layout.setContentsMargins(8, 8, 8, 8)
+            outer_layout.setSpacing(6)
+            header_layout = QHBoxLayout()
+            title_label = QLabel("Atlas")
+            title_label.setStyleSheet("font-size: 20px; font-weight: 700; color: #f8fafc;")
+            subtitle_label = QLabel("Gemini-style local assistant")
+            subtitle_label.setStyleSheet("color: #94a3b8; font-size: 11px;")
+            header_layout.addWidget(title_label)
+            header_layout.addStretch()
+            header_layout.addWidget(subtitle_label)
+            outer_layout.addLayout(header_layout)
+
             menubar = QMenuBar()
+            menubar.setMinimumHeight(24)
+            file_menu = menubar.addMenu("File")
+            self.action_load_model = QAction("Load Model...", self)
+            self.action_load_model.triggered.connect(self._on_load_model)
+            file_menu.addAction(self.action_load_model)
+            self.action_save_chat = QAction("Save Chat History", self)
+            self.action_save_chat.triggered.connect(self._on_save_chat)
+            file_menu.addAction(self.action_save_chat)
             debug_menu = menubar.addMenu("Debug")
             self.action_show_debug = QAction("Show Debug Panel", self)
             self.action_show_debug.setCheckable(True)
@@ -652,14 +738,17 @@ if _HAS_QT:
             self.scroll_area.setWidgetResizable(True)
             self.chat_container = QWidget()
             self.chat_layout = QVBoxLayout(self.chat_container)
-            self.chat_layout.setContentsMargins(8, 8, 8, 8)
-            self.chat_layout.setSpacing(8)
+            self.chat_layout.setContentsMargins(4, 4, 4, 4)
+            self.chat_layout.setSpacing(6)
             self.chat_layout.addStretch()
             self.scroll_area.setWidget(self.chat_container)
+            self.scroll_area.setStyleSheet("QScrollArea { border: none; }")
 
             input_layout = QHBoxLayout()
+            input_layout.setContentsMargins(0, 0, 0, 0)
+            input_layout.setSpacing(6)
             self.input_line = QLineEdit()
-            self.input_line.setPlaceholderText("Type your message and press Enter...")
+            self.input_line.setPlaceholderText("Ask Atlas...")
             self.input_line.returnPressed.connect(self.on_send)
             self.send_button = QPushButton("Send")
             self.send_button.clicked.connect(self.on_send)
@@ -667,7 +756,7 @@ if _HAS_QT:
             input_layout.addWidget(self.send_button)
 
             self.status_label = QLabel("")
-            self.status_label.setStyleSheet("color: #555;")
+            self.status_label.setStyleSheet("color: #94a3b8; font-size: 11px;")
 
             outer_layout.addWidget(self.scroll_area)
             outer_layout.addLayout(input_layout)
@@ -693,6 +782,25 @@ if _HAS_QT:
             else:
                 self.debug_dialog.hide()
 
+        def _on_load_model(self) -> None:
+            path, _ = QFileDialog.getOpenFileName(
+                self,
+                "Select GGUF Model",
+                MODEL_SEARCH_DIR,
+                "GGUF Files (*.gguf);;All Files (*)",
+            )
+            if not path:
+                return
+            response = self.assistant.load_model(path)
+            self._append_chat("Atlas", response)
+            self.assistant.history.append({"role": "assistant", "message": response})
+            self.assistant.save_chat_history()
+
+        def _on_save_chat(self) -> None:
+            response = self.assistant.save_chat_history()
+            self._append_chat("Atlas", response)
+            self.assistant.history.append({"role": "assistant", "message": response})
+
         def on_send(self) -> None:
             user_text = self.input_line.text().strip()
             if not user_text:
@@ -700,19 +808,17 @@ if _HAS_QT:
 
             self._append_chat("You", user_text)
             self.current_user_text = user_text
+            self.assistant.history.append({"role": "user", "message": user_text})
             self.input_line.clear()
             self.status_label.setText("Thinking...")
             self.send_button.setEnabled(False)
             QApplication.processEvents()
 
-            lower = user_text.lower()
-            if lower in ("!help", "!memory", "!clear"):
-                if lower == "!help":
-                    self._append_chat("System", self.assistant._print_help.__doc__ or "Available commands: !help, !memory, !clear, !remember <note>")
-                elif lower == "!memory":
-                    self._append_chat("System", self.assistant.show_memory())
-                elif lower == "!clear":
-                    self._append_chat("System", self.assistant.clear_memory())
+            command_response = self.assistant.handle_command(user_text)
+            if command_response is not None:
+                self._append_chat("Atlas", command_response)
+                self.assistant.history.append({"role": "assistant", "message": command_response})
+                self.assistant.save_chat_history()
                 self.send_button.setEnabled(True)
                 self.status_label.setText("")
                 return
@@ -724,10 +830,8 @@ if _HAS_QT:
             self.worker.start()
 
         def _on_response_ready(self, answer: str, details: str) -> None:
-            user_text = getattr(self, 'current_user_text', '')
-            if user_text:
-                self.assistant.history.append({"role": "user", "message": user_text})
             self.assistant.history.append({"role": "assistant", "message": answer})
+            self.assistant.save_chat_history()
             self._append_chat("Atlas", answer, details)
             if self.assistant.last_prompt:
                 self._append_debug(f"[DEBUG] Prompt sent:\n{self.assistant.last_prompt}\n")
@@ -763,7 +867,8 @@ def select_model(models: List[str], fallback: Optional[str] = None) -> str:
 
 def main() -> None:
     if len(sys.argv) > 1 and sys.argv[1] in ("-h", "--help"):
-        print("Usage: python3 AtlasAI.py [--model PATH] [--cli]")
+        print("Usage: python3 Atlas.py [--model PATH] [--cli]")
+        print("       python3 AtlasAI.py [--model PATH] [--cli]")
         return
 
     model_path = None
@@ -783,10 +888,16 @@ def main() -> None:
     assistant = AtlasAI(model_path=model_path, memory_path=MEMORY_FILE)
     if _HAS_QT and "--cli" not in sys.argv:
         app = QApplication(sys.argv)
+        app.setStyle("Fusion")
         window = AtlasGUI(assistant)
         window.show()
+        window.raise_()
+        window.activateWindow()
+        QTimer.singleShot(0, window.activateWindow)
         sys.exit(app.exec())
     else:
+        if not _HAS_QT:
+            print("PySide6 is not available, falling back to CLI mode.")
         assistant.run()
 
 

@@ -1,45 +1,84 @@
 # AtlasAI
-An AI Gui Interface For Hot Swappable GGUF Files
-
-**Author:** Camilla  
-**Year:** 2026
-
----
+A local AI assistant with a PySide6 GUI and CLI fallback for GGUF models.
 
 ## Overview
 
-This repository contains **two AI assistants**:
+AtlasAI is a single-file Python assistant that can run as a desktop GUI or console chatbot. It supports:
+- Local GGUF LLM models via `llama-cpp-python`
+- Persistent memory storage for context and recall
+- DuckDuckGo web search integration with optional `!search` commands
+- Automatic preference and fact memory saving
+- A polished Gemini-inspired chat UI when PySide6 is installed
+- CLI fallback when GUI mode is unavailable
 
-1. **Work AI** – A Python documentation assistant built to provide instant answers and guidance from Python docs. Perfect for developers looking for fast, accurate help.
+## Requirements
 
-2. **Personal AI** – A personality-driven assistant designed to learn and interact with you in a more natural, personal way. Can be customized for memory, tone, and behavior.
+- Python 3.10+
+- `PySide6` for GUI mode
+- `llama-cpp-python`
+- `numpy`
+- `requests`
+- `sentence-transformers`
+- `psutil`
 
----
-
-## Features
-
-### Work AI
-- Access to the full Python documentation
-- Query-based answers using a retrieval-augmented generation (RAG) system
-- Fast and reliable coding support
-- Built for use in Python projects, coding tutorials, or learning environments
-
-### Personal AI
-- Conversational personality for personal assistance
-- Memory system to recall prior interactions
-- Customizable tone and behavior
-- Optional voice integration for interactive experiences
-
----
-
-## Installation
+Install dependencies:
 
 ```bash
-# Clone this repository
-git clone https://github.com/mummypoop/atlasai.git
-cd atlasai
-
-
-# Install dependencies
 pip install -r requirements.txt
-uv pip install -r requirements.txt
+```
+
+## Running AtlasAI
+
+By default, AtlasAI attempts to launch the GUI if PySide6 is installed. If GUI support is unavailable, it falls back to the CLI.
+
+```bash
+python3 Atlas.py
+```
+
+Legacy entrypoint (supported via wrapper):
+
+```bash
+python3 AtlasAI.py
+```
+
+Force CLI mode:
+
+```bash
+python3 Atlas.py --cli
+```
+
+Use a specific GGUF model:
+
+```bash
+python3 Atlas.py --model /path/to/model.gguf
+```
+
+## Commands
+
+- `!help` — show available commands
+- `!memory` — display current saved memory entries
+- `!clear` — clear saved memory
+- `!remember <note>` — save a manual note to memory
+- `!savechat` — save the full chat history to disk
+- `!chatlog` — show the saved chat history location
+- `!loadmodel <path>` — hot swap to a new GGUF model without restarting
+- `!model <path>` — alias for `!loadmodel`
+- `!search <query>` — perform a DuckDuckGo search and add the result to memory
+
+## Notes
+
+- Memory is stored at `~/.AtlasAI/memory.jsonl`
+- Default search path for models is `~/Documents/Ai_Models/`
+- The GUI includes a File menu for loading a new model and saving chat history
+- Full chat history is saved to `~/.AtlasAI/chat_history.jsonl`
+- The GUI window includes a debug panel for prompt and model output inspection
+
+## Troubleshooting
+
+- If the GUI does not start, confirm `PySide6` is installed:
+
+```bash
+pip install PySide6
+```
+
+- If you see a model path error, pass `--model /path/to/model.gguf` or place models in `~/Documents/Ai_Models/`

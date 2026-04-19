@@ -1,3 +1,4 @@
+# AtlasAI: A high-performance reasoning assistant with memory and web search capabilities.
 import json
 import math
 import os
@@ -59,6 +60,8 @@ EMBED_DIM = 384
 DUCKDUCKGO_API = "https://api.duckduckgo.com/"
 DUCKDUCKGO_TIMEOUT = 15
 HALF_LIFE_SECONDS = 60 * 60 * 24 * 7
+DEFAULT_GPU_LAYERS = 16
+ENABLE_AUTO_MEMORY = os.environ.get("ATLASAI_AUTO_MEMORY", "0") == "1"
 ENGRAM_TYPE_WEIGHTS = {
     "preference": 1.5,
     "manual": 1.4,
@@ -72,9 +75,10 @@ SYSTEM_PROMPT = (
     "You are Atlas, a high-performance reasoning assistant. "
     "Your answers should feel polished, confident, and trustworthy like a leading AI service. "
     "Always prioritize accuracy, avoid hallucination, and keep your response concise. "
-    "You have access to web search results for current information. "
+    "You have access to the user's saved memory file at ~/.AtlasAI/memory.jsonl, and you may use relevant memories from it when answering. "
+    "You also have access to web search results for current information. "
     "Use the web results when they help answer the user's question, especially for recent events, news, or factual queries. "
-    "If the web information is not useful, you may ignore it. "
+    "If the web or memory information is not useful, you may ignore it. "
     "When solving problems, think through the steps carefully and then respond with a short answer followed by an optional brief explanation. "
     "If you are uncertain, say That you don't know rather than inventing details."
 )
@@ -87,11 +91,7 @@ PROMPT_TEMPLATE = (
     "{tools_section}"
     "User request:\n{user}\n\n"
     "{web_section}"
-    "Instructions:\n"
-    "- Provide the final result under 'Answer:' in 1-3 sentences.\n"
-    "- If useful, include a brief 'Details:' section after the answer.\n"
-    "- Do not expose your internal reasoning unless the user explicitly asks for it.\n"
-    "- Prefer clarity and avoid unnecessary repetition.\n"
+    "Assistant:\n"
 )
 
 READONLY_COMMANDS = ["!quit", "!exit", "!help", "!memory", "!clear"]
@@ -249,21 +249,47 @@ def simple_embedding(text: str) -> np.ndarray:
 def extract_json_text(text: str) -> str:
     """
     Extract the first JSON object or array from the model output.
+    Uses a stack to find the matching closing bracket in O(n).
     """
     text = text.strip()
     if not text:
         return ""
 
-    for start in range(len(text)):
-        if text[start] not in "{[":
+    openers = {"{": "}", "[": "]"}
+    closers = set(openers.values())
+
+    for start, ch in enumerate(text):
+        if ch not in openers:
             continue
-        for end in range(start + 1, len(text) + 1):
-            candidate = text[start:end]
-            try:
-                json.loads(candidate)
-                return candidate
-            except json.JSONDecodeError:
+        stack = []
+        in_string = False
+        escape = False
+        for end in range(start, len(text)):
+            c = text[end]
+            if escape:
+                escape = False
                 continue
+            if c == "\\" and in_string:
+                escape = True
+                continue
+            if c == '"':
+                in_string = not in_string
+                continue
+            if in_string:
+                continue
+            if c in openers:
+                stack.append(openers[c])
+            elif c in closers:
+                if not stack or stack[-1] != c:
+                    break
+                stack.pop()
+                if not stack:
+                    candidate = text[start:end + 1]
+                    try:
+                        json.loads(candidate)
+                        return candidate
+                    except json.JSONDecodeError:
+                        break
 
     return ""
 
@@ -346,30 +372,60 @@ class AtlasAI:
         self.model_path = model_path
         self.memory = MemoryStore(memory_path)
         self.history: List[Dict[str, str]] = []
+        self.chat_filename: Optional[str] = None
         self.last_prompt = ""
         self.last_raw_response = ""
+        self.gpu_layers = 0
+        self.auto_save_memory = ENABLE_AUTO_MEMORY
         self.llm = self._load_model(model_path)
         self._print_startup_info()
 
     def _load_model(self, model_path: str) -> Llama:
         os.environ["LLAMA_CUBLAS"] = "1"
+        os.environ["GGML_CUBLAS"] = "1"
         os.environ["GGML_CUDA_FORCE_CUBLAS"] = "1"
         os.environ["OMP_NUM_THREADS"] = str(os.cpu_count() or 1)
         os.environ["MKL_NUM_THREADS"] = str(os.cpu_count() or 1)
         os.environ["OPENBLAS_NUM_THREADS"] = str(os.cpu_count() or 1)
 
-        return Llama(
-            model_path=model_path,
-            n_ctx=8192,
-            n_gpu_layers=-1,
-            n_threads=os.cpu_count() or 1,
-            use_mlock=True,
-            use_mmap=False,
-            top_k=40,
-            top_p=0.92,
-            temperature=0.1,
-            repeat_penalty=1.05,
-        )
+        gpu_layers = self._detect_gpu_layers()
+        self.gpu_layers = 0
+        model_kwargs = {
+            "model_path": model_path,
+            "n_ctx": 8192,
+            "main_gpu": 0,
+            "n_threads": os.cpu_count() or 1,
+            "use_mlock": False,
+            "use_mmap": True,
+            "top_k": 40,
+            "top_p": 0.92,
+            "temperature": 0.1,
+            "repeat_penalty": 1.05,
+        }
+
+        candidates = [gpu_layers] if gpu_layers > 0 else []
+        candidates += [16, 12, 8, 4, 2, 1, 0]
+        seen = set()
+        final_candidates = []
+        for candidate in candidates:
+            if candidate not in seen and candidate >= 0:
+                seen.add(candidate)
+                final_candidates.append(candidate)
+
+        last_exc = None
+        for candidate in final_candidates:
+            model_kwargs["n_gpu_layers"] = candidate
+            try:
+                llm = Llama(**model_kwargs)
+                self.gpu_layers = candidate
+                return llm
+            except Exception as exc:
+                last_exc = exc
+                if candidate > 0:
+                    print(f"Failed to initialize model with {candidate} GPU layer(s). Trying lower GPU count...")
+                continue
+
+        raise last_exc
 
     def _sanitize_chat_name(self, name: str) -> Optional[str]:
         if not name:
@@ -378,6 +434,50 @@ class AtlasAI:
         if not re.fullmatch(r"[A-Za-z0-9]+(?: [A-Za-z0-9]+){0,2}", cleaned):
             return None
         return cleaned.lower().replace(" ", "_")
+
+    def _detect_gpu_layers(self) -> int:
+        env_layers = os.environ.get("ATLASAI_GPU_LAYERS")
+        if env_layers:
+            try:
+                return max(0, int(env_layers))
+            except ValueError:
+                pass
+
+        cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES", "").strip()
+        if cuda_visible:
+            return DEFAULT_GPU_LAYERS
+
+        try:
+            import torch
+            if torch.cuda.is_available():
+                return DEFAULT_GPU_LAYERS
+        except Exception:
+            pass
+
+        return 0
+
+    def _derive_chat_name(self) -> str:
+        user_messages = [entry["message"] for entry in self.history if entry["role"] == "user"]
+        if not user_messages:
+            return "last_session"
+
+        candidate = next((msg for msg in user_messages if not msg.strip().startswith("!")), user_messages[0])
+        candidate = candidate.strip().lower()
+        candidate = re.sub(r"[^a-z0-9 ]+", "", candidate)
+        words = [word for word in candidate.split() if word]
+        if not words:
+            return "last_session"
+
+        return "_".join(words[:4])
+
+    def _ensure_chat_filename(self) -> str:
+        if self.chat_filename:
+            return self.chat_filename
+
+        base_name = self._derive_chat_name()
+        timestamp = time.strftime("%Y%m%d_%H%M%S", time.localtime())
+        self.chat_filename = f"{base_name}_{timestamp}"
+        return self.chat_filename
 
     def _chat_history_filepath(self, sanitized_name: str) -> str:
         return os.path.join(CHAT_LOG_DIR, f"{sanitized_name}.jsonl")
@@ -389,8 +489,10 @@ class AtlasAI:
             if not sanitized:
                 return "Chat name must be 1-3 words containing only letters and numbers."
             filepath = self._chat_history_filepath(sanitized)
+            self.chat_filename = sanitized
         else:
-            filepath = os.path.join(CHAT_LOG_DIR, "last_session.jsonl")
+            filename = self._ensure_chat_filename()
+            filepath = self._chat_history_filepath(filename)
 
         with open(filepath, "w", encoding="utf-8") as fh:
             for entry in self.history:
@@ -419,6 +521,7 @@ class AtlasAI:
                     continue
 
         self.history = loaded
+        self.chat_filename = sanitized
         return f"Loaded chat '{name}' with {len(self.history)} messages."
 
     def load_chat_history_file(self, path: str) -> str:
@@ -436,6 +539,7 @@ class AtlasAI:
                     continue
 
         self.history = loaded
+        self.chat_filename = os.path.splitext(os.path.basename(path))[0]
         return f"Loaded chat file {os.path.basename(path)} with {len(self.history)} messages."
 
     def list_chat_history(self) -> str:
@@ -468,13 +572,6 @@ class AtlasAI:
         self.model_path = model_path
         self.llm = self._load_model(model_path)
         return f"Loaded model: {self.model_path}"
-
-    def save_chat_history(self) -> str:
-        os.makedirs(os.path.dirname(CHAT_LOG_FILE), exist_ok=True)
-        with open(CHAT_LOG_FILE, "w", encoding="utf-8") as fh:
-            for entry in self.history:
-                fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
-        return f"Chat history saved to {CHAT_LOG_FILE}"
 
     def handle_command(self, user: str) -> Optional[str]:
         lowered = user.lower().strip()
@@ -522,6 +619,11 @@ class AtlasAI:
             print("Embedding: fallback mode")
         else:
             print(f"Embedding: {self.memory.embed_model_name}")
+        if self.gpu_layers > 0:
+            print(f"GPU model acceleration enabled with {self.gpu_layers} layer(s) on GPU.")
+        else:
+            print("GPU model acceleration is disabled or unavailable.")
+        print(f"Auto memory saving: {'enabled' if self.auto_save_memory else 'disabled'}")
         if not _HAS_QT:
             print("GUI support unavailable. Install PySide6 or run with --cli for console mode.")
         print("Type '!help' for commands. Start typing your question.")
@@ -550,25 +652,46 @@ class AtlasAI:
             tools_section=tools_section,
         )
 
+    def _should_search(self, user: str) -> bool:
+        """Return True if the query is likely to benefit from a web search."""
+        lowered = user.lower().strip()
+        # Explicit search command
+        if lowered.startswith("!search "):
+            return True
+        # Commands never need searching
+        if lowered.startswith("!"):
+            return False
+        # Recency / news signals
+        recency_signals = [
+            "latest", "newest", "recent", "right now", "currently", "today",
+            "this week", "this month", "this year", "in 2024", "in 2025", "in 2026",
+            "news", "update", "current", "now", "just released", "just announced",
+            "happening", "live", "breaking",
+        ]
+        if any(signal in lowered for signal in recency_signals):
+            return True
+        # Question words about facts that change over time
+        factual_patterns = [
+            r"\bwho is\b", r"\bwho are\b", r"\bwhat is\b", r"\bwhat are\b",
+            r"\bwhere is\b", r"\bwhen (is|was|did|will)\b", r"\bhow (much|many|long|old)\b",
+            r"\bprice of\b", r"\bcost of\b", r"\bweather\b", r"\bstock\b",
+        ]
+        if any(re.search(p, lowered) for p in factual_patterns):
+            return True
+        return False
+
     def _prepare_query(self, user: str) -> tuple[str, str, str]:
         web_summary = ""
         web_sources = ""
         query = user
         if user.lower().startswith("!search "):
             query = user[len("!search "):].strip()
-        if not query.startswith("!"):
+        if self._should_search(user):
             search_data = duckduckgo_search(query)
             web_summary = search_data.get("summary", "")
             sources = search_data.get("sources", [])
             if sources:
                 web_sources = "\n".join([f"{src.get('title','')} - {src.get('url','')}" for src in sources])
-            if web_summary:
-                self.memory.add(
-                    f"Web search: {query} | {web_summary}",
-                    tag="web",
-                    weight=1.2,
-                    source="duckduckgo",
-                )
         return query, web_summary, web_sources
 
     def _run_query(self, user: str) -> str:
@@ -576,7 +699,15 @@ class AtlasAI:
         retrieved = self.memory.search(query)
         prompt = self.build_prompt(query, retrieved, web_summary=web_summary, web_sources=web_sources)
         self.last_prompt = prompt
-        response = self.llm(prompt, max_tokens=512, temperature=0.1, top_p=0.92, stream=False)
+        response = self.llm(
+            prompt,
+            max_tokens=512,
+            temperature=0.1,
+            top_p=0.92,
+            repeat_penalty=1.2,
+            stop=["\nUser:", "\nAssistant:"],
+            stream=False,
+        )
 
         if isinstance(response, dict):
             choices = response.get("choices")
@@ -608,7 +739,8 @@ class AtlasAI:
         raw = self._run_query(user)
         answer, _ = self._split_answer_details(raw)
         answer = self._clean_output(answer)
-        self._auto_save_memory(user, answer)
+        if self.auto_save_memory:
+            self._auto_save_memory(user, answer)
         return answer
 
     def respond_with_details(self, user: str) -> tuple[str, str]:
@@ -621,10 +753,11 @@ class AtlasAI:
             raw = self._run_query(user)
             answer, details = self._split_answer_details(raw)
             answer = self._clean_output(answer)
-            try:
-                self._auto_save_memory(user, answer)
-            except Exception:
-                pass
+            if self.auto_save_memory:
+                try:
+                    self._auto_save_memory(user, answer)
+                except Exception:
+                    pass
             return answer, details
         except Exception as exc:
             return f"Error generating response: {exc}", ""
@@ -720,9 +853,6 @@ class AtlasAI:
                 continue
             lower = user.lower()
 
-            if lower in ("!quit", "!exit"):
-                print("Goodbye.")
-                break
             if lower in ("!quit", "!exit"):
                 print("Goodbye.")
                 break
@@ -828,7 +958,7 @@ if _HAS_QT:
             header_layout = QHBoxLayout()
             title_label = QLabel("Atlas")
             title_label.setStyleSheet("font-size: 20px; font-weight: 700; color: #f8fafc;")
-            subtitle_label = QLabel("Gemini-style local assistant")
+            subtitle_label = QLabel("Ur GAY")
             subtitle_label.setStyleSheet("color: #94a3b8; font-size: 11px;")
             header_layout.addWidget(title_label)
             header_layout.addStretch()
@@ -838,9 +968,6 @@ if _HAS_QT:
             menubar = QMenuBar()
             menubar.setMinimumHeight(24)
             file_menu = menubar.addMenu("File")
-            self.action_load_model = QAction("Load Model...", self)
-            self.action_load_model.triggered.connect(self._on_load_model)
-            file_menu.addAction(self.action_load_model)
             self.action_save_chat = QAction("Save Chat As...", self)
             self.action_save_chat.triggered.connect(self._on_save_chat_as)
             file_menu.addAction(self.action_save_chat)
@@ -851,6 +978,8 @@ if _HAS_QT:
             self.action_save_chat_history = QAction("Save Current Chat", self)
             self.action_save_chat_history.triggered.connect(self._on_save_chat)
             file_menu.addAction(self.action_save_chat_history)
+            self.model_menu = menubar.addMenu("Model")
+            self._populate_model_menu()
             debug_menu = menubar.addMenu("Debug")
             self.action_show_debug = QAction("Show Debug Panel", self)
             self.action_show_debug.setCheckable(True)
@@ -928,6 +1057,35 @@ if _HAS_QT:
             self._append_chat("Atlas", response)
             self.assistant.history.append({"role": "assistant", "message": response})
             self.assistant.save_chat_history()
+
+        def _on_select_model(self, model_path: str) -> None:
+            response = self.assistant.load_model(model_path)
+            self._append_chat("Atlas", response)
+            self.assistant.history.append({"role": "assistant", "message": response})
+            self.assistant.save_chat_history()
+
+        def _populate_model_menu(self) -> None:
+            self.model_menu.clear()
+            try:
+                models = find_gguf_models()
+            except Exception:
+                models = []
+
+            if not models:
+                action = QAction("No models found", self)
+                action.setEnabled(False)
+                self.model_menu.addAction(action)
+            else:
+                for model_path in models:
+                    model_name = os.path.basename(model_path)
+                    action = QAction(model_name, self)
+                    action.setData(model_path)
+                    action.triggered.connect(lambda checked, p=model_path: self._on_select_model(p))
+                    self.model_menu.addAction(action)
+                self.model_menu.addSeparator()
+                refresh_action = QAction("Refresh models", self)
+                refresh_action.triggered.connect(self._populate_model_menu)
+                self.model_menu.addAction(refresh_action)
 
         def _on_save_chat_as(self) -> None:
             name, ok = QInputDialog.getText(self, "Save Chat As", "Enter chat name (1-3 words):")

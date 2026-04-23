@@ -1,4 +1,5 @@
 # AtlasAI: A high-performance reasoning assistant with memory and web search capabilities.
+from email.mime import text
 import json
 import math
 import os
@@ -8,7 +9,10 @@ import requests
 import sys
 import time
 import datetime
+import html
 from typing import Any, Dict, List, Optional
+
+from torch import layout
 
 try:
     import numpy as np
@@ -42,6 +46,8 @@ try:
         QMenuBar,
         QTextEdit,
         QDialog,
+        QComboBox,
+        QDialogButtonBox,
         QFileDialog,
         QInputDialog,
     )
@@ -61,7 +67,7 @@ DUCKDUCKGO_API = "https://api.duckduckgo.com/"
 DUCKDUCKGO_TIMEOUT = 15
 HALF_LIFE_SECONDS = 60 * 60 * 24 * 7
 DEFAULT_GPU_LAYERS = 16
-ENABLE_AUTO_MEMORY = os.environ.get("ATLASAI_AUTO_MEMORY", "0") == "1"
+ENABLE_AUTO_MEMORY = os.environ.get("ATLASAI_AUTO_MEMORY", "1") == "1"
 ENGRAM_TYPE_WEIGHTS = {
     "preference": 1.5,
     "manual": 1.4,
@@ -70,33 +76,6 @@ ENGRAM_TYPE_WEIGHTS = {
     "event": 1.1,
     "recent": 0.9,
 }
-
-SYSTEM_PROMPT = (
-    "You are Atlas, a high-performance reasoning assistant. "
-    "Your answers should feel polished, confident, and trustworthy like a leading AI service. "
-    "Always prioritize accuracy, avoid hallucination, and keep your response concise. "
-    "You have access to the user's saved memory file at ~/.AtlasAI/memory.jsonl, and you may use relevant memories from it when answering. "
-    "You also have access to web search results for current information. "
-    "Use the web results when they help answer the user's question, especially for recent events, news, or factual queries. "
-    "If the web or memory information is not useful, you may ignore it. "
-    "When solving problems, think through the steps carefully and then respond with a short answer followed by an optional brief explanation. "
-    "If you are uncertain, say That you don't know rather than inventing details."
-)
-
-PROMPT_TEMPLATE = (
-    "{system}\n\n"
-    "Context:\n{context}\n\n"
-    "{recent_section}"
-    "{instructions_section}"
-    "{tools_section}"
-    "User request:\n{user}\n\n"
-    "{web_section}"
-    "Assistant:\n"
-)
-
-READONLY_COMMANDS = ["!quit", "!exit", "!help", "!memory", "!clear"]
-DEFAULT_INSTRUCTIONS_FILENAME = "instructions.md"
-DEFAULT_TOOLS_FILENAME = "tools.md"
 
 
 def load_markdown_file(filename: str) -> str:
@@ -112,6 +91,44 @@ def load_markdown_file(filename: str) -> str:
             except Exception:
                 return ""
     return ""
+
+
+# new system prompt taking from a file instead of hardcoding it here, with a fallback to the old prompt if the file is not found or cannot be read.
+SYSTEM_PROMPT = load_markdown_file("system_prompt.md") or (
+    "You are Atlas, a high-performance reasoning assistant. "
+    "Your answers should feel polished, confident, and trustworthy like a leading AI service. "
+    "Always prioritize accuracy, avoid hallucination, and keep your response concise. "
+    "You do not read files directly. Instead, all available memory is provided to you inside the prompt sections named MEMORY_FILE_SNAPSHOT and RELEVANT_MEMORY_HITS. "
+    "Treat those sections as authoritative memory input and use them when relevant. "
+    "Do not claim you cannot access memory when those sections are present. "
+    "You also have access to web search results for current information. "
+    "Use the web results when they help answer the user's question, especially for recent events, news, or factual queries. "
+    "If the web or memory information is not useful, you may ignore it. "
+    "When solving problems, think through the steps carefully and then respond with a short answer followed by an optional brief explanation. "
+    "If you are uncertain, say That you don't know rather than inventing details."
+)
+# Printing the if it used the default prompt instead of the file-based one, to make it clear to the user what is being used.
+if SYSTEM_PROMPT.endswith("system_prompt.md") or "You are Atlas, a high-performance reasoning assistant" in SYSTEM_PROMPT:
+    print("Using default system prompt. To customize, create a file named 'system_prompt.md' in the same directory as Atlas.py with your desired prompt content.")
+else:
+    print("Loaded system prompt from 'system_prompt.md'.")
+PROMPT_TEMPLATE = (
+    "{system}\n\n"
+    "MEMORY_FILE_SNAPSHOT (authoritative):\n{memory_section}\n\n"
+    "RELEVANT_MEMORY_HITS:\n{context}\n\n"
+    "{recent_section}"
+    "{instructions_section}"
+    "{tools_section}"
+    "User request:\n{user}\n\n"
+    "{web_section}"
+    "Assistant:\n"
+)
+
+READONLY_COMMANDS = ["!quit", "!exit", "!help", "!memory", "!clear"]
+DEFAULT_INSTRUCTIONS_FILENAME = "instructions.md"
+DEFAULT_TOOLS_FILENAME = "tools.md"
+MAX_PROMPT_MEMORY_ENTRIES = 200
+MAX_PROMPT_MEMORY_CHARS = 12000
 
 
 def find_gguf_models(search_dir: str = MODEL_SEARCH_DIR) -> List[str]:
@@ -137,6 +154,7 @@ class MemoryStore:
         self.embeddings: Optional[np.ndarray] = None
         self.use_fallback = False
         self.model = None
+        self.last_error = ""
         os.makedirs(os.path.dirname(self.path), exist_ok=True)
         self._initialize_embedder()
         self.load()
@@ -392,7 +410,7 @@ class AtlasAI:
         self.gpu_layers = 0
         model_kwargs = {
             "model_path": model_path,
-            "n_ctx": 8192,
+            "n_ctx": 32384,
             "main_gpu": 0,
             "n_threads": os.cpu_count() or 1,
             "use_mlock": False,
@@ -400,11 +418,11 @@ class AtlasAI:
             "top_k": 40,
             "top_p": 0.92,
             "temperature": 0.1,
-            "repeat_penalty": 1.05,
+            "repeat_penalty": 1.2,
         }
 
         candidates = [gpu_layers] if gpu_layers > 0 else []
-        candidates += [16, 12, 8, 4, 2, 1, 0]
+        candidates += [64, 32, 16, 12, 8, 4, 2, 1, 0]
         seen = set()
         final_candidates = []
         for candidate in candidates:
@@ -631,6 +649,7 @@ class AtlasAI:
 
     def build_prompt(self, user: str, retrieved: List[str], web_summary: str = "", web_sources: str = "") -> str:
         context = "\n".join(retrieved) if retrieved else "No relevant memory found."
+        memory_section = self._memory_snapshot_for_prompt()
         recent_context = format_conversation(self.history)
         recent_section = "Recent conversation:\n" + recent_context + "\n\n" if recent_context else ""
         instructions = load_markdown_file(DEFAULT_INSTRUCTIONS_FILENAME)
@@ -644,6 +663,7 @@ class AtlasAI:
                 web_section += "Web sources:\n" + web_sources.strip() + "\n\n"
         return PROMPT_TEMPLATE.format(
             system=SYSTEM_PROMPT,
+            memory_section=memory_section,
             context=context,
             user=user,
             web_section=web_section,
@@ -651,6 +671,31 @@ class AtlasAI:
             instructions_section=instructions_section,
             tools_section=tools_section,
         )
+
+    def _memory_snapshot_for_prompt(self) -> str:
+        if not self.memory.entries:
+            return "Memory is empty."
+
+        lines: List[str] = []
+        for entry in self.memory.entries[-MAX_PROMPT_MEMORY_ENTRIES:]:
+            tag = str(entry.get("tag", "fact"))
+            weight = float(entry.get("weight", 1.0))
+            text = str(entry.get("text", "")).strip().replace("\n", " ")
+            if not text:
+                continue
+            lines.append(f"- [{tag} w={weight:.2f}] {text}")
+
+        if not lines:
+            return "Memory is empty."
+
+        snapshot = "\n".join(lines)
+        if len(snapshot) > MAX_PROMPT_MEMORY_CHARS:
+            snapshot = snapshot[-MAX_PROMPT_MEMORY_CHARS:]
+            first_newline = snapshot.find("\n")
+            if first_newline != -1:
+                snapshot = snapshot[first_newline + 1 :]
+            snapshot = "[Truncated memory snapshot]\n" + snapshot
+        return snapshot
 
     def _should_search(self, user: str) -> bool:
         """Return True if the query is likely to benefit from a web search."""
@@ -701,7 +746,7 @@ class AtlasAI:
         self.last_prompt = prompt
         response = self.llm(
             prompt,
-            max_tokens=512,
+            max_tokens=1024,
             temperature=0.1,
             top_p=0.92,
             repeat_penalty=1.2,
@@ -763,6 +808,31 @@ class AtlasAI:
             return f"Error generating response: {exc}", ""
 
     def _handle_special_cases(self, user: str) -> Optional[str]:
+        lowered = user.lower().strip()
+        memory_queries = [
+            "what do you remember",
+            "show memory",
+            "what is in memory",
+            "what's in memory",
+            "memory entries",
+            "saved memory",
+            "recall memory",
+        ]
+        if any(phrase in lowered for phrase in memory_queries):
+            return self.show_memory()
+
+        # Intercept explicit save requests so they are guaranteed to persist
+        # before the LLM generates any response.
+        to_save = self._detect_save_intent(user)
+        if to_save:
+            tag = "manual"
+            if any(w in lowered for w in ["prefer", "like", "love", "hate", "enjoy", "favorite"]):
+                tag = "preference"
+            elif any(w in lowered for w in ["i am", "i'm", "my name", "i work", "i live"]):
+                tag = "fact"
+            self.memory.add(to_save, tag=tag, weight=1.5, source="user_request")
+            return f"Got it, I'll remember that: {to_save}"
+
         if is_math_query(user):
             expr_match = re.search(r"([0-9\.\s\+\-\*/\(\)]+)", user)
             if expr_match:
@@ -777,6 +847,13 @@ class AtlasAI:
             return "I couldn't generate a response."
         text = re.sub(r"^\s*(assistant:|assistant\n|response:|answer:)\s*", "", text, flags=re.I)
         return text
+
+    def _render_markdown_for_gui(self, text: str) -> str:
+        escaped = html.escape(text)
+        escaped = re.sub(r"`([^`]+)`", r"<code>\1</code>", escaped)
+        escaped = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", escaped)
+        escaped = re.sub(r"(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)", r"<em>\1</em>", escaped)
+        return escaped.replace("\n", "<br>")
 
     def _auto_save_memory(self, user: str, response: str) -> None:
         decision_prompt = (
@@ -805,14 +882,40 @@ class AtlasAI:
         if save and summary:
             self.memory.add(summary, tag=tag, weight=1.2, source="auto")
 
+    def _detect_save_intent(self, user: str) -> Optional[str]:
+        """Return the text to save if the user explicitly asks Atlas to remember something."""
+        lowered = user.lower().strip()
+        explicit_patterns = [
+            r"(?:please\s+)?(?:remember|save|note|store|keep track of)\s+(?:that\s+)?(?:my\s+)?(.+)",
+            r"(?:i want you to|can you|could you)\s+(?:remember|save|note)\s+(?:that\s+)?(.+)",
+            r"(?:make a note|make note)\s+(?:that\s+)?(.+)",
+            r"(?:add to memory|save to memory|store in memory)\s*[:\-]?\s*(.+)",
+        ]
+        for pattern in explicit_patterns:
+            m = re.search(pattern, lowered)
+            if m:
+                captured = m.group(1).strip().rstrip(".!?")
+                if len(captured) >= 4:
+                    return captured
+        return None
+
     def add_memory_if_relevant(self, user: str, response: str) -> None:
+        # Explicit save-intent: extract what to remember and persist it immediately.
+        to_save = self._detect_save_intent(user)
+        if to_save:
+            self.memory.add(to_save, tag="manual", weight=1.5, source="user_request")
+            return
+
+        # Passive preference/identity signals.
         lowered = user.lower()
-        triggers = ["remember that", "i prefer", "i like", "my favorite", "i'm", "i am"]
+        triggers = ["i prefer", "i like", "my favorite", "i'm", "i am"]
         if any(trigger in lowered for trigger in triggers):
-            text = f"User said: {user} | Assistant responded: {response}"
-            self.memory.add(text, tag="preference", weight=1.5)
+            self.memory.add(user.strip(), tag="preference", weight=1.4, source="passive")
 
     def show_memory(self) -> str:
+        memory_error = getattr(self.memory, "last_error", "")
+        if memory_error:
+            return f"Memory warning: {memory_error}"
         if not self.memory.entries:
             return "Memory is empty."
         scored = []
@@ -885,6 +988,40 @@ class AtlasAI:
             "  !exit         Quit the assistant\n"
         )
 
+def _render_markdown_for_gui(self, text: str) -> str:
+    import html
+    # Escape HTML first
+    text = html.escape(text)
+
+    # Code blocks (``` ... ```)
+    text = re.sub(
+        r'```(\w+)?\n?(.*?)```',
+        lambda m: f"<pre style='background:#0d1117; color:#c9d1d9; padding:8px; border-radius:6px; font-family:monospace; white-space:pre-wrap;'>{m.group(2)}</pre>",
+        text, flags=re.DOTALL
+    )
+
+    # Inline code
+    text = re.sub(r'`([^`]+)`', r"<code style='background:#0d1117; color:#c9d1d9; padding:2px 4px; border-radius:3px; font-family:monospace;'>\1</code>", text)
+
+    # Bold
+    text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
+
+    # Italic
+    text = re.sub(r'\*(.+?)\*', r'<i>\1</i>', text)
+
+    # Headers
+    text = re.sub(r'^### (.+)$', r"<h3 style='color:#93c5fd;'>\1</h3>", text, flags=re.MULTILINE)
+    text = re.sub(r'^## (.+)$', r"<h2 style='color:#93c5fd;'>\1</h2>", text, flags=re.MULTILINE)
+    text = re.sub(r'^# (.+)$', r"<h1 style='color:#93c5fd;'>\1</h1>", text, flags=re.MULTILINE)
+
+    # Bullet points
+    text = re.sub(r'^\s*[-*] (.+)$', r'<li>\1</li>', text, flags=re.MULTILINE)
+    text = re.sub(r'(<li>.*</li>)', r'<ul>\1</ul>', text, flags=re.DOTALL)
+
+    # Newlines (outside of pre blocks)
+    text = re.sub(r'\n', '<br>', text)
+
+    return text
 
 if _HAS_QT:
     class ResponseThread(QThread):
@@ -904,34 +1041,107 @@ if _HAS_QT:
                 self.error_occurred.emit(str(exc))
 
     class ChatBubble(QWidget):
-        def __init__(self, role: str, text: str, details: str = ""):
+        def __init__(self, assistant: "AtlasAI", role: str, text: str, details: str = ""):
             super().__init__()
+            self.assistant = assistant
             layout = QVBoxLayout(self)
+            layout.setSpacing(4)
+
             role_label = QLabel(role)
             role_label.setStyleSheet("color: #94a3b8; font-weight: 700; margin-bottom: 4px;")
-            message_label = QLabel(
-                f"<div style='font-size:14px; color:#e2e8f0; line-height:1.4;'>{text.replace('\n', '<br>')}</div>"
-            )
-            message_label.setTextFormat(Qt.RichText)
-            message_label.setWordWrap(True)
             layout.addWidget(role_label)
-            layout.addWidget(message_label)
+
+            for widget in self._render_message(text):
+                layout.addWidget(widget)
+
             if details:
                 self.toggle_button = QPushButton("Show details")
-                self.details_label = QLabel(details.replace("\n", "<br>"))
-                self.details_label.setWordWrap(True)
-                self.details_label.setVisible(False)
+                self.details_container = QWidget()
+                details_layout = QVBoxLayout(self.details_container)
+                details_layout.setContentsMargins(0, 0, 0, 0)
+                for widget in self._render_message(details):
+                    details_layout.addWidget(widget)
+                self.details_container.setVisible(False)
                 self.toggle_button.clicked.connect(self._toggle_details)
                 layout.addWidget(self.toggle_button)
-                layout.addWidget(self.details_label)
+                layout.addWidget(self.details_container)
+
             bubble_bg = "#1e293b" if role.lower() == "atlas" else "#111827"
             self.setStyleSheet(
                 f"QWidget {{ border-radius: 16px; background: {bubble_bg}; margin: 4px; padding: 10px; }}"
-            )
+            ) 
+
+        def _render_message(self, text: str) -> list:
+            import html as htmllib
+            widgets = []
+            # Split on code blocks
+            parts = re.split(r'(```(?:\w+)?\n?.*?```)', text, flags=re.DOTALL)
+            for part in parts:
+                code_match = re.match(r'```(\w+)?\n?(.*?)```', part, flags=re.DOTALL)
+                if code_match:
+                    code = code_match.group(2).rstrip()
+
+                    # Wrapper widget so we can stack the button over the text edit
+                    wrapper = QWidget()
+                    wrapper.setStyleSheet("QWidget { background: transparent; }")
+                    wrapper_layout = QVBoxLayout(wrapper)
+                    wrapper_layout.setContentsMargins(0, 0, 0, 0)
+                    wrapper_layout.setSpacing(0)
+
+                    # Top bar with copy button aligned right
+                    top_bar = QWidget()
+                    top_bar.setStyleSheet("QWidget { background: #0d1117; border-radius: 6px 6px 0px 0px; }")
+                    top_bar_layout = QHBoxLayout(top_bar)
+                    top_bar_layout.setContentsMargins(8, 4, 8, 4)
+                    top_bar_layout.addStretch()
+                    copy_btn = QPushButton("Copy")
+                    copy_btn.setFixedSize(60, 24)
+                    copy_btn.setStyleSheet(
+                        "QPushButton { background: #334155; color: #94a3b8; border-radius: 4px; font-size: 11px; padding: 0px; }"
+                        "QPushButton:hover { background: #475569; color: #f8fafc; }"
+                    )
+                    copy_btn.clicked.connect(lambda checked, c=code: self._copy_code(c, copy_btn))
+                    top_bar_layout.addWidget(copy_btn)
+                    wrapper_layout.addWidget(top_bar)
+
+                    # Code text area
+                    code_edit = QTextEdit()
+                    code_edit.setReadOnly(True)
+                    code_edit.setPlainText(code)
+                    code_edit.setStyleSheet(
+                        "QTextEdit { background-color: #0d1117 !important; color: #c9d1d9 !important; "
+                        "font-family: monospace; font-size: 13px; border-radius: 0px 0px 6px 6px; "
+                        "border: none; padding: 8px; }"
+                    )
+                    # Auto-size height to content
+                    code_edit.setMinimumHeight(60)
+                    code_edit.setMaximumHeight(400)
+                    code_edit.document().contentsChanged.connect(
+                        lambda: code_edit.setFixedHeight(
+                            min(int(code_edit.document().size().height()) + 24, 400)
+                        )
+                    )
+                    wrapper_layout.addWidget(code_edit)
+                    widgets.append(wrapper)
+                else:
+                    if not part.strip():
+                        continue
+                    rendered = self.assistant._render_markdown_for_gui(part) if hasattr(self.assistant, '_render_markdown_for_gui') else htmllib.escape(part).replace('\n', '<br>')
+                    label = QLabel(f"<div style='font-size:14px; color:#e2e8f0; line-height:1.6;'>{rendered}</div>")
+                    label.setTextFormat(Qt.RichText)
+                    label.setWordWrap(True)
+                    label.setTextInteractionFlags(Qt.TextSelectableByMouse | Qt.LinksAccessibleByMouse)
+                    widgets.append(label)
+            return widgets
+
+        def _copy_code(self, code: str, button: "QPushButton") -> None:
+            QApplication.clipboard().setText(code)
+            button.setText("Copied!")
+            QTimer.singleShot(2000, lambda: button.setText("Copy"))
 
         def _toggle_details(self) -> None:
-            visible = not self.details_label.isVisible()
-            self.details_label.setVisible(visible)
+            visible = not self.details_container.isVisible()
+            self.details_container.setVisible(visible)
             self.toggle_button.setText("Hide details" if visible else "Show details")
 
 
@@ -968,16 +1178,21 @@ if _HAS_QT:
             menubar = QMenuBar()
             menubar.setMinimumHeight(24)
             file_menu = menubar.addMenu("File")
+            self.chat_menu = menubar.addMenu("Chats")
             self.action_save_chat = QAction("Save Chat As...", self)
             self.action_save_chat.triggered.connect(self._on_save_chat_as)
-            file_menu.addAction(self.action_save_chat)
+            self.chat_menu.addAction(self.action_save_chat)
             self.action_load_chat = QAction("Load Chat...", self)
             self.action_load_chat.triggered.connect(self._on_load_chat)
-            file_menu.addAction(self.action_load_chat)
-            file_menu.addSeparator()
+            self.chat_menu.addAction(self.action_load_chat)
+            self.chat_menu.addSeparator()
+            self.action_new_chat = QAction("New Chat", self)
+            self.action_new_chat.triggered.connect(self._on_new_chat)
+            self.chat_menu.addAction(self.action_new_chat)
+            self.chat_menu.addSeparator()
             self.action_save_chat_history = QAction("Save Current Chat", self)
             self.action_save_chat_history.triggered.connect(self._on_save_chat)
-            file_menu.addAction(self.action_save_chat_history)
+            self.chat_menu.addAction(self.action_save_chat_history)
             self.model_menu = menubar.addMenu("Model")
             self._populate_model_menu()
             debug_menu = menubar.addMenu("Debug")
@@ -1025,7 +1240,7 @@ if _HAS_QT:
             outer_layout.addWidget(self.status_label)
 
         def _append_chat(self, role: str, text: str, details: str = "") -> None:
-            bubble = ChatBubble(role, text, details)
+            bubble = ChatBubble(self.assistant, role, text, details)
             self.chat_layout.insertWidget(self.chat_layout.count() - 1, bubble)
             QTimer.singleShot(50, self._scroll_to_bottom)
 
@@ -1099,6 +1314,27 @@ if _HAS_QT:
             response = self.assistant.save_chat_history()
             self._append_chat("Atlas", response)
             self.assistant.history.append({"role": "assistant", "message": response})
+
+        def _clear_chat_view(self) -> None:
+            while self.chat_layout.count():
+                item = self.chat_layout.takeAt(0)
+                widget = item.widget()
+                if widget is not None:
+                    widget.deleteLater()
+            self.chat_layout.addStretch()
+
+        def _on_new_chat(self) -> None:
+            if self.assistant.history:
+                try:
+                    self.assistant.save_chat_history()
+                except Exception:
+                    pass
+
+            self.assistant.history = []
+            self.assistant.chat_filename = None
+            self._clear_chat_view()
+            self._append_chat("Atlas", "Started a new chat.")
+            self.status_label.setText("New chat ready")
 
         def _on_load_chat(self) -> None:
             os.makedirs(CHAT_LOG_DIR, exist_ok=True)
@@ -1178,6 +1414,35 @@ def select_model(models: List[str], fallback: Optional[str] = None) -> str:
         print("Invalid selection.")
 
 
+def select_model_gui(models: List[str], parent: Optional[QWidget] = None) -> Optional[str]:
+    if not _HAS_QT or not models:
+        return None
+
+    dialog = QDialog(parent)
+    dialog.setWindowTitle("Select Model")
+    layout = QVBoxLayout(dialog)
+    label = QLabel("Choose a GGUF model:", dialog)
+    layout.addWidget(label)
+
+    combo = QComboBox(dialog)
+    for idx, path in enumerate(models, start=1):
+        combo.addItem(f"{idx}. {os.path.basename(path)}")
+    layout.addWidget(combo)
+
+    buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, parent=dialog)
+    buttons.accepted.connect(dialog.accept)
+    buttons.rejected.connect(dialog.reject)
+    layout.addWidget(buttons)
+
+    if dialog.exec() != QDialog.Accepted:
+        return None
+
+    index = combo.currentIndex()
+    if 0 <= index < len(models):
+        return models[index]
+    return None
+
+
 def main() -> None:
     if len(sys.argv) > 1 and sys.argv[1] in ("-h", "--help"):
         print("Usage: python3 Atlas.py [--model PATH] [--cli]")
@@ -1194,14 +1459,21 @@ def main() -> None:
         print(f"Model path not found: {model_path}")
         sys.exit(1)
 
-    if model_path is None:
-        models = find_gguf_models()
-        model_path = select_model(models)
-
-    assistant = AtlasAI(model_path=model_path, memory_path=MEMORY_FILE)
     if _HAS_QT and "--cli" not in sys.argv:
         app = QApplication(sys.argv)
         app.setStyle("Fusion")
+        if model_path is None:
+            try:
+                models = find_gguf_models()
+            except Exception as exc:
+                print(f"Error finding models: {exc}")
+                sys.exit(1)
+            model_path = select_model_gui(models)
+            if not model_path:
+                print("Model selection cancelled.")
+                sys.exit(0)
+
+        assistant = AtlasAI(model_path=model_path, memory_path=MEMORY_FILE)
         window = AtlasGUI(assistant)
         window.show()
         window.raise_()
@@ -1209,6 +1481,10 @@ def main() -> None:
         QTimer.singleShot(0, window.activateWindow)
         sys.exit(app.exec())
     else:
+        if model_path is None:
+            models = find_gguf_models()
+            model_path = select_model(models)
+        assistant = AtlasAI(model_path=model_path, memory_path=MEMORY_FILE)
         if not _HAS_QT:
             print("PySide6 is not available, falling back to CLI mode.")
         assistant.run()

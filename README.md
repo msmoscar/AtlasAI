@@ -74,7 +74,13 @@ Atlas now automatically includes web search results for normal queries, so it ca
 
 ## Notes
 
-- Memory is stored at `~/.AtlasAI/memory.jsonl`
+- Memory is stored at `~/.AtlasAI/memory.jsonl` by default.
+- If the default location is not writable, Atlas falls back to `./.AtlasAI/memory.jsonl` in the current working directory.
+- You can force a specific memory location with `ATLASAI_MEMORY_DIR`, for example:
+
+```bash
+ATLASAI_MEMORY_DIR=/path/to/writable/folder python3 Atlas.py
+```
 - Default search path for models is `~/Documents/Ai_Models/`
 - The GUI includes a File menu for loading models, saving named chats, and loading saved chats
 - Named chat files are stored in `~/.AtlasAI/chats/` and use 1-3 word names

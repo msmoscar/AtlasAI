@@ -3,7 +3,7 @@ A local AI assistant with a PySide6 GUI and CLI fallback for GGUF models.
 
 ## Overview
 
-AtlasAI is a single-file Python assistant that can run as a desktop GUI or console chatbot. It supports:
+AtlasAI is a single-file Python assistant that runs with a GUI interface. It supports:
 - Local GGUF LLM models via `llama-cpp-python`
 - Persistent memory storage for context and recall
 - DuckDuckGo web search integration with optional `!search` commands
@@ -23,8 +23,13 @@ AtlasAI is a single-file Python assistant that can run as a desktop GUI or conso
 
 Install dependencies:
 
+Through Pip
 ```bash
 pip install -r requirements.txt
+```
+Or though UV
+```bash
+uv pip install -r requirements
 ```
 
 ## Running AtlasAI
@@ -47,11 +52,7 @@ Force CLI mode:
 python3 Atlas.py --cli
 ```
 
-Use a specific GGUF model:
-
-```bash
-python3 Atlas.py --model /path/to/model.gguf
-```
+As of 22/4/26 Model Changing can be done Fully through GUI but its recommended to pick a model at program start
 
 ## Commands
 
@@ -71,6 +72,7 @@ Atlas now automatically includes web search results for normal queries, so it ca
 
 - Place `instructions.md` in the repo root to give Atlas per-prompt instructions.
 - Place `tools.md` in the repo root to document available tools and APIs.
+- Place `system_prompt.md` in the repo or fallback to default system prompt built in
 
 ## Notes
 

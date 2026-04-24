@@ -1,5 +1,4 @@
-# AtlasAI: A high-performance reasoning assistant with memory and web search capabilities.
-from email.mime import text
+# AtlasAI: A high-performance reasoning assistant with memory and web search capabilitim
 import json
 import math
 import os

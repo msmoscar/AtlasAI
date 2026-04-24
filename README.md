@@ -97,3 +97,5 @@ pip install PySide6
 ```
 
 - If you see a model path error, pass `--model /path/to/model.gguf` or place models in `~/Documents/Ai_Models/`
+
+### If the code in question does not work please find the last working version and report the issue to the project manager

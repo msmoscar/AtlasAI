@@ -12,8 +12,6 @@ import datetime
 import html
 from typing import Any, Dict, List, Optional
 
-from torch import layout
-
 try:
     import numpy as np
 except ImportError:
@@ -21,8 +19,8 @@ except ImportError:
 
 try:
     from llama_cpp import Llama
-except ImportError:
-    raise ImportError("Atlas requires llama-cpp-python. Install it with: pip install llama-cpp-python")
+except Exception:
+    Llama = None  # type: ignore
 
 try:
     from sentence_transformers import SentenceTransformer
@@ -386,7 +384,7 @@ def duckduckgo_search(query: str, max_results: int = 4) -> Dict[str, Any]:
 
 
 class AtlasAI:
-    def __init__(self, model_path: str, memory_path: str = MEMORY_FILE):
+    def __init__(self, model_path: Optional[str] = None, memory_path: str = MEMORY_FILE):
         self.model_path = model_path
         self.memory = MemoryStore(memory_path)
         self.history: List[Dict[str, str]] = []
@@ -395,10 +393,16 @@ class AtlasAI:
         self.last_raw_response = ""
         self.gpu_layers = 0
         self.auto_save_memory = ENABLE_AUTO_MEMORY
-        self.llm = self._load_model(model_path)
+        self.llm: Optional[Llama] = None
+        if model_path:
+            self.llm = self._load_model(model_path)
         self._print_startup_info()
 
     def _load_model(self, model_path: str) -> Llama:
+        if not model_path:
+            raise ValueError("Model path is required to load a model.")
+        if Llama is None:
+            raise ImportError("Atlas requires llama-cpp-python. Install it with: pip install llama-cpp-python")
         os.environ["LLAMA_CUBLAS"] = "1"
         os.environ["GGML_CUBLAS"] = "1"
         os.environ["GGML_CUDA_FORCE_CUBLAS"] = "1"
@@ -630,7 +634,8 @@ class AtlasAI:
 
     def _print_startup_info(self) -> None:
         print("AtlasAI is ready.")
-        print(f"Model: {self.model_path}")
+        model_name = self.model_path if self.model_path else "No model loaded"
+        print(f"Model: {model_name}")
         print(f"Memory: {self.memory.path}")
         print(f"Memory entries: {len(self.memory.entries)}")
         if self.memory.use_fallback:
@@ -740,6 +745,8 @@ class AtlasAI:
         return query, web_summary, web_sources
 
     def _run_query(self, user: str) -> str:
+        if self.llm is None:
+            raise RuntimeError("No model loaded. Load a GGUF model before running queries.")
         query, web_summary, web_sources = self._prepare_query(user)
         retrieved = self.memory.search(query)
         prompt = self.build_prompt(query, retrieved, web_summary=web_summary, web_sources=web_sources)
@@ -856,6 +863,8 @@ class AtlasAI:
         return escaped.replace("\n", "<br>")
 
     def _auto_save_memory(self, user: str, response: str) -> None:
+        if self.llm is None:
+            return
         decision_prompt = (
             "You are a memory curator for AtlasAI. Decide if the following exchange should be saved to long-term memory. "
             "Save only user preferences, stable personal data, recurring goals, important facts, project details, or useful web discoveries. "
@@ -1273,6 +1282,15 @@ if _HAS_QT:
             self.assistant.history.append({"role": "assistant", "message": response})
             self.assistant.save_chat_history()
 
+        def _on_unload_model(self) -> None:
+            self.assistant.model_path = None
+            self.assistant.llm = None
+            self.assistant.gpu_layers = 0
+            response = "No model loaded. Atlas is now in no-model mode."
+            self._append_chat("Atlas", response)
+            self.assistant.history.append({"role": "assistant", "message": response})
+            self.assistant.save_chat_history()
+
         def _on_select_model(self, model_path: str) -> None:
             response = self.assistant.load_model(model_path)
             self._append_chat("Atlas", response)
@@ -1281,6 +1299,10 @@ if _HAS_QT:
 
         def _populate_model_menu(self) -> None:
             self.model_menu.clear()
+            unload_action = QAction("Unload model / no model", self)
+            unload_action.triggered.connect(self._on_unload_model)
+            self.model_menu.addAction(unload_action)
+            self.model_menu.addSeparator()
             try:
                 models = find_gguf_models()
             except Exception:
@@ -1415,16 +1437,17 @@ def select_model(models: List[str], fallback: Optional[str] = None) -> str:
 
 
 def select_model_gui(models: List[str], parent: Optional[QWidget] = None) -> Optional[str]:
-    if not _HAS_QT or not models:
+    if not _HAS_QT:
         return None
 
     dialog = QDialog(parent)
     dialog.setWindowTitle("Select Model")
     layout = QVBoxLayout(dialog)
-    label = QLabel("Choose a GGUF model:", dialog)
+    label = QLabel("Choose a GGUF model or select No model:", dialog)
     layout.addWidget(label)
 
     combo = QComboBox(dialog)
+    combo.addItem("0. No model")
     for idx, path in enumerate(models, start=1):
         combo.addItem(f"{idx}. {os.path.basename(path)}")
     layout.addWidget(combo)
@@ -1438,8 +1461,11 @@ def select_model_gui(models: List[str], parent: Optional[QWidget] = None) -> Opt
         return None
 
     index = combo.currentIndex()
-    if 0 <= index < len(models):
-        return models[index]
+    if index == 0:
+        return ""
+    model_index = index - 1
+    if 0 <= model_index < len(models):
+        return models[model_index]
     return None
 
 
@@ -1469,7 +1495,7 @@ def main() -> None:
                 print(f"Error finding models: {exc}")
                 sys.exit(1)
             model_path = select_model_gui(models)
-            if not model_path:
+            if model_path is None:
                 print("Model selection cancelled.")
                 sys.exit(0)
 

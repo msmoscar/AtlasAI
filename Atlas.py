@@ -1177,7 +1177,7 @@ if _HAS_QT:
             header_layout = QHBoxLayout()
             title_label = QLabel("Atlas")
             title_label.setStyleSheet("font-size: 20px; font-weight: 700; color: #f8fafc;")
-            subtitle_label = QLabel("Ur GAY")
+            subtitle_label = QLabel("meow")
             subtitle_label.setStyleSheet("color: #94a3b8; font-size: 11px;")
             header_layout.addWidget(title_label)
             header_layout.addStretch()

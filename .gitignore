@@ -1,4 +1,3 @@
 __pycache__/
 *.bin
 *.gguf
-test.py

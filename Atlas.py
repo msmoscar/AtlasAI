@@ -1,4 +1,5 @@
-# AtlasAI: A high-performance reasoning assistant with memory and web search capabilitim
+# AtlasAI: A high-performance reasoning assistant with memory and web search capabilities
+# i think the best model is qwen2.5 or qwen3, but you can use any gguf model you like. best if its a reasoning model.
 import json
 import math
 import os
@@ -18,7 +19,7 @@ except ImportError:
 try:
     from llama_cpp import Llama
 except Exception:
-    Llama = None  # type: ignore
+    Llama = None
 
 try:
     from sentence_transformers import SentenceTransformer
@@ -52,6 +53,26 @@ except Exception:
     Qt = QTimer = Signal = QThread = QApplication = QWidget = QVBoxLayout = QHBoxLayout = QLabel = QLineEdit = QPushButton = QScrollArea = QMenuBar = QAction = QTextEdit = QDialog = QFileDialog = QInputDialog = None
     _HAS_QT = False
 
+def _auto_detect_gpu_layers() -> int:
+    env_layers = os.environ.get("ATLASAI_GPU_LAYERS")
+    if env_layers:
+        try:
+            return max(0, int(env_layers))
+        except ValueError:
+            pass
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=memory.free", "--format=csv,noheader,nounits"],
+            capture_output=True, text=True
+        )
+        free_mb = int(result.stdout.strip())
+        layers = max(0, (free_mb - 512) // 150)
+        return min(layers, 99)
+    except Exception:
+        pass
+    return 0
+
 MEMORY_DIR = os.path.join(pathlib.Path.home(), ".AtlasAI")
 CHAT_LOG_DIR = os.path.join(MEMORY_DIR, "chats")
 MEMORY_FILE = os.path.join(MEMORY_DIR, "memory.jsonl")
@@ -62,7 +83,7 @@ EMBED_DIM = 384
 DUCKDUCKGO_API = "https://api.duckduckgo.com/"
 DUCKDUCKGO_TIMEOUT = 15
 HALF_LIFE_SECONDS = 60 * 60 * 24 * 7
-DEFAULT_GPU_LAYERS = 16
+DEFAULT_GPU_LAYERS = _auto_detect_gpu_layers()
 ENABLE_AUTO_MEMORY = os.environ.get("ATLASAI_AUTO_MEMORY", "1") == "1"
 ENGRAM_TYPE_WEIGHTS = {
     "preference": 1.5,
@@ -389,7 +410,7 @@ class AtlasAI:
         self.chat_filename: Optional[str] = None
         self.last_prompt = ""
         self.last_raw_response = ""
-        self.gpu_layers = 0
+        self.gpu_layers = int(os.environ.get("ATLASAI_GPU_LAYERS", DEFAULT_GPU_LAYERS))
         self.auto_save_memory = ENABLE_AUTO_MEMORY
         self.llm: Optional[Llama] = None
         if model_path:
@@ -408,12 +429,12 @@ class AtlasAI:
         os.environ["MKL_NUM_THREADS"] = str(os.cpu_count() or 1)
         os.environ["OPENBLAS_NUM_THREADS"] = str(os.cpu_count() or 1)
 
-        gpu_layers = self._detect_gpu_layers()
-        self.gpu_layers = 0
+        self.gpu_layers = int(os.environ.get("ATLASAI_GPU_LAYERS", DEFAULT_GPU_LAYERS))
         model_kwargs = {
             "model_path": model_path,
-            "n_ctx": 32384,
+            "n_ctx": 16384,
             "main_gpu": 0,
+            "n_gpu_layers": self.gpu_layers,
             "n_threads": os.cpu_count() or 1,
             "use_mlock": False,
             "use_mmap": True,
@@ -423,29 +444,7 @@ class AtlasAI:
             "repeat_penalty": 1.2,
         }
 
-        candidates = [gpu_layers] if gpu_layers > 0 else []
-        candidates += [64, 32, 16, 12, 8, 4, 2, 1, 0]
-        seen = set()
-        final_candidates = []
-        for candidate in candidates:
-            if candidate not in seen and candidate >= 0:
-                seen.add(candidate)
-                final_candidates.append(candidate)
-
-        last_exc = None
-        for candidate in final_candidates:
-            model_kwargs["n_gpu_layers"] = candidate
-            try:
-                llm = Llama(**model_kwargs)
-                self.gpu_layers = candidate
-                return llm
-            except Exception as exc:
-                last_exc = exc
-                if candidate > 0:
-                    print(f"Failed to initialize model with {candidate} GPU layer(s). Trying lower GPU count...")
-                continue
-
-        raise last_exc
+        return Llama(**model_kwargs)
 
     def _sanitize_chat_name(self, name: str) -> Optional[str]:
         if not name:
@@ -454,27 +453,6 @@ class AtlasAI:
         if not re.fullmatch(r"[A-Za-z0-9]+(?: [A-Za-z0-9]+){0,2}", cleaned):
             return None
         return cleaned.lower().replace(" ", "_")
-
-    def _detect_gpu_layers(self) -> int:
-        env_layers = os.environ.get("ATLASAI_GPU_LAYERS")
-        if env_layers:
-            try:
-                return max(0, int(env_layers))
-            except ValueError:
-                pass
-
-        cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES", "").strip()
-        if cuda_visible:
-            return DEFAULT_GPU_LAYERS
-
-        try:
-            import torch
-            if torch.cuda.is_available():
-                return DEFAULT_GPU_LAYERS
-        except Exception:
-            pass
-
-        return 0
 
     def _derive_chat_name(self) -> str:
         user_messages = [entry["message"] for entry in self.history if entry["role"] == "user"]
@@ -905,6 +883,27 @@ class AtlasAI:
                 if len(captured) >= 4:
                     return captured
         return None
+
+    def _auto_detect_gpu_layers() -> int:
+        env_layers = os.environ.get("ATLASAI_GPU_LAYERS")
+        if env_layers:
+            try:
+                return max(0, int(env_layers))
+            except ValueError:
+                pass
+        try:
+            import subprocess
+            result = subprocess.run(
+                ["nvidia-smi", "--query-gpu=memory.free", "--format=csv,noheader,nounits"],
+                capture_output=True, text=True
+            )
+            free_mb = int(result.stdout.strip())
+            layers = max(0, (free_mb - 512) // 150)
+            return min(layers, 99)
+        except Exception:
+            pass
+        return 0
+
 
     def add_memory_if_relevant(self, user: str, response: str) -> None:
         # Explicit save-intent: extract what to remember and persist it immediately.

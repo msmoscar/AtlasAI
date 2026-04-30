@@ -12,7 +12,7 @@ All notable changes to Atlas will be documented here.
 - CLI mode
 - GUI mode (PySide6) with dark theme, chat bubbles, and markdown rendering
 - Code blocks with copy button in GUI
-- Model switcher — load/unload GGUF models at runtime
+- Model switcher - load/unload GGUF models at runtime
 - Named session save/load
 - Debug panel for raw prompt inspection
 - Graceful fallbacks for optional dependencies (`sentence-transformers`, `PySide6`, `torch`)

@@ -601,7 +601,6 @@ class AtlasAI:
     def load_model(self, model_path: str) -> str:
         if not model_path:
             return "Usage: !loadmodel /path/to/model.gguf"
-
         if os.path.isdir(model_path):
             models = find_gguf_models(model_path)
             if not models:
@@ -610,6 +609,10 @@ class AtlasAI:
 
         if not os.path.exists(model_path):
             return f"Model path not found: {model_path}"
+
+        if self.llm is not None:
+            self.llm = None
+            import gc; gc.collect()
 
         self.model_path = model_path
         self.llm = self._load_model(model_path)
@@ -1328,8 +1331,9 @@ if _HAS_QT:
             self.assistant.save_chat_history()
 
         def _on_unload_model(self) -> None:
-            self.assistant.model_path = None
             self.assistant.llm = None
+            self.assistant.model_path = None
+            import gc; gc.collect()
             self.assistant.gpu_layers = 0
             response = "No model loaded. Atlas is now in no-model mode."
             self._append_chat("Atlas", response)

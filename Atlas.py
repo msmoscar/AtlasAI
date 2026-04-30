@@ -359,6 +359,7 @@ def extract_json_text(text: str) -> str:
             if c == '"':
                 in_string = not in_string
                 continue
+                add_memory_if_relevant 
             if in_string:
                 continue
             if c in openers:
@@ -1049,6 +1050,41 @@ class AtlasAI:
             "  !model X      Alias for !loadmodel\n"
             "  !exit         Quit the assistant\n"
         )
+
+    def _render_markdown_for_gui(self, text: str) -> str:
+        import html
+        # Escape HTML first
+        text = html.escape(text)
+
+        # Code blocks (``` ... ```)
+        text = re.sub(
+            r'```(\w+)?\n?(.*?)```',
+            lambda m: f"<pre style='background:#0d1117; color:#c9d1d9; padding:8px; border-radius:6px; font-family:monospace; white-space:pre-wrap;'>{m.group(2)}</pre>",
+            text, flags=re.DOTALL
+        )
+
+        # Inline code
+        text = re.sub(r'`([^`]+)`', r"<code style='background:#0d1117; color:#c9d1d9; padding:2px 4px; border-radius:3px; font-family:monospace;'>\1</code>", text)
+
+        # Bold
+        text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
+
+        # Italic
+        text = re.sub(r'\*(.+?)\*', r'<i>\1</i>', text)
+
+        # Headers
+        text = re.sub(r'^### (.+)$', r"<h3 style='color:#93c5fd;'>\1</h3>", text, flags=re.MULTILINE)
+        text = re.sub(r'^## (.+)$', r"<h2 style='color:#93c5fd;'>\1</h2>", text, flags=re.MULTILINE)
+        text = re.sub(r'^# (.+)$', r"<h1 style='color:#93c5fd;'>\1</h1>", text, flags=re.MULTILINE)
+
+        # Bullet points
+        text = re.sub(r'^\s*[-*] (.+)$', r'<li>\1</li>', text, flags=re.MULTILINE)
+        text = re.sub(r'(<li>.*</li>)', r'<ul>\1</ul>', text, flags=re.DOTALL)
+
+        # Newlines (outside of pre blocks)
+        text = re.sub(r'\n', '<br>', text)
+
+        return text
 
 if _HAS_QT:
     class ResponseThread(QThread):

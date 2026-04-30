@@ -95,10 +95,15 @@ def _auto_detect_context_size(safety_buffer_mb: int = 512) -> int:
             capture_output=True, text=True
         )
         total_mb, free_mb = (int(x.strip()) for x in result.stdout.strip().split(","))
+        # Reserve space for model weights (use total - free as model size estimate)
+        model_mb = total_mb - free_mb
         available_mb = free_mb - safety_buffer_mb
         if available_mb > 0:
-            max_tokens = int((available_mb / 0.5) * 1024)
-            return max(4096, min(max_tokens, 131072))
+            #~0.125MB per token per layer for Q4, 28-32 layers typical
+            n_layers = 32
+            mb_per_token = (n_layers * 2 * 128) / 1024  # key + value, head_dim=128
+            max_tokens = int(available_mb / mb_per_token)
+            return max(4096, min(max_tokens, 32768))
     except Exception:
         pass
     # Fall back to system RAM (CPU path) - much more conservative

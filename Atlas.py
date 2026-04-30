@@ -9,7 +9,7 @@ import requests
 import sys
 import time
 import html
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 try:
     import numpy as np
@@ -161,7 +161,7 @@ def load_markdown_file(filename: str) -> str:
 SYSTEM_PROMPT = load_markdown_file("system_prompt.md")
 # End of system prompt")
 # Printing the if it used the default prompt instead of the file-based one, to make it clear to the user what is being used.
-if SYSTEM_PROMPT.endswith("system_prompt.md") or "You are Atlas, a high-performance reasoning assistant" in SYSTEM_PROMPT:
+if not SYSTEM_PROMPT:
     print("System prompt not found. Please create a file named 'system_prompt.md' in the same directory as Atlas.py with your desired prompt content.")
 else:
     print("Loaded system prompt from 'system_prompt.md'.")
@@ -402,8 +402,9 @@ def format_conversation(history: List[Dict[str, str]]) -> str:
         return "No previous conversation."
     lines = []
     for item in history[-20:]:
-        prefix = "User" if item["role"] == "user" else "Assistant"
-        lines.append(f"{prefix}: {item['message']}")
+        prefix = "User" if item.get("role") == "user" else "Assistant"
+        message = item.get("message", "")
+        lines.append(f"{prefix}: {message}")
     return "\n".join(lines)
 
 
@@ -790,14 +791,17 @@ class AtlasAI:
             stream=False,
         )
 
-        if isinstance(response, dict):
-            choices = response.get("choices")
-            if isinstance(choices, list) and choices:
-                text = choices[0].get("text", "").strip()
+        try:
+            if isinstance(response, dict):
+                choices = response.get("choices")
+                if isinstance(choices, list) and choices:
+                    text = str(choices[0].get("text", "")).strip()
+                else:
+                    text = str(response.get("text", "")).strip()
             else:
-                text = response.get("text", "").strip()
-        else:
-            text = str(response).strip()
+                text = str(response).strip()
+        except Exception as exc:
+            text = f"[Error parsing model response: {exc}]"
 
         self.last_raw_response = text
         return text
@@ -1038,7 +1042,9 @@ class AtlasAI:
             "  !memory       Show recent memory entries\n"
             "  !clear        Clear all saved memory\n"
             "  !remember X   Save a note to memory\n"
-            "  !savechat     Save the full chat history to disk\n"
+            "  !savechat X   Save the full chat history to disk under name X\n"
+            "  !loadchat X   Load a saved chat by name\n"
+            "  !listchats    List all saved chats\n"
             "  !chatlog      Show saved chat log location\n"
             "  !loadmodel X  Load a new GGUF model at runtime\n"
             "  !model X      Alias for !loadmodel\n"

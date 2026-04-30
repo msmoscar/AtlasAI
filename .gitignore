@@ -3,3 +3,6 @@ __pycache__/
 *.gguf
 test.py
 system_prompt.md
+.venv/
+.idea
+.DS_STORE0;9u

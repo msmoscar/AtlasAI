@@ -15,7 +15,7 @@ If you find a security vulnerability in Atlas, please **do not open a public Git
 
 **camillajgd@gmail.com**
 
-Please include as much detail as you can — what the issue is, how to reproduce it, and what impact you think it could have. That makes it much easier to understand and address.
+Please include as much detail as you can - what the issue is, how to reproduce it, and what impact you think it could have. That makes it much easier to understand and address.
 
 ## Response Time
 

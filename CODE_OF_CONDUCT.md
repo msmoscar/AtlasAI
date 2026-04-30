@@ -2,7 +2,7 @@
 
 ## The Short Version
 
-Be decent to each other. This is a small open source project — there's no room for harassment, discrimination, or general nastiness.
+Be decent to each other. This is a small open source project - there's no room for harassment, discrimination, or general nastiness.
 
 ## Expected Behaviour
 

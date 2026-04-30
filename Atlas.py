@@ -1560,6 +1560,5 @@ def main() -> None:
             print("PySide6 is not available, falling back to CLI mode.")
         assistant.run()
 
-
 if __name__ == "__main__":
     main()

@@ -2,7 +2,7 @@
 
 All notable changes to Atlas will be documented here.
 
-## [0.1.0-alpha] — 2026-04-24
+## [0.1.0-alpha] - 2026-04-24
 
 ### Added
 - Local GGUF model support via `llama-cpp-python` with automatic GPU layer detection

@@ -266,7 +266,7 @@ class MemoryStore:
             return []
         scores = np.dot(self.embeddings, query_emb)
         now = time.time()
-        scored: List[tuple[float, Dict[str, Any]]] = []
+        scored: List[Tuple[float, Dict[str, Any]]] = []
         for i, sim in enumerate(scores.tolist()):
             entry = self.entries[i]
             age = now - entry.get("timestamp", now)
@@ -358,7 +358,8 @@ def extract_json_text(text: str) -> str:
                 continue
             if c == '"':
                 in_string = not in_string
-                continueadd_memory_if_relevant 
+                continue
+                add_memory_if_relevant 
             if in_string:
                 continue
             if c in openers:
@@ -758,7 +759,7 @@ class AtlasAI:
             return True
         return False
 
-    def _prepare_query(self, user: str) -> tuple[str, str, str]:
+    def _prepare_query(self, user: str) -> Tuple[str, str, str]:
         web_summary = ""
         web_sources = ""
         query = user
@@ -801,7 +802,7 @@ class AtlasAI:
         self.last_raw_response = text
         return text
 
-    def _split_answer_details(self, text: str) -> tuple[str, str]:
+    def _split_answer_details(self, text: str) -> Tuple[str, str]:
         text = text.strip()
         markers = ["\nDetails:", "\nThoughts:", "\nReasoning:", "\nThought:", "\nDetail:"]
         for marker in markers:
@@ -823,7 +824,7 @@ class AtlasAI:
             self._auto_save_memory(user, answer)
         return answer
 
-    def respond_with_details(self, user: str) -> tuple[str, str]:
+    def respond_with_details(self, user: str) -> Tuple[str, str]:
         if not user:
             return "", ""
         special = self._handle_special_cases(user)
@@ -938,12 +939,6 @@ class AtlasAI:
         if save and summary:
             self.memory.add(summary, tag=tag, weight=weight, source="auto")
 
-            save = bool(decision.get("save", False))
-            summary = str(decision.get("summary", "")).strip()
-            tag = str(decision.get("tag", "fact")).strip() or "fact"
-            if save and summary:
-                self.memory.add(summary, tag=tag, weight=weight, source="auto")
-
     def _detect_save_intent(self, user: str) -> Optional[str]:
         """Return the text to save if the user explicitly asks Atlas to remember something."""
         lowered = user.lower().strip()
@@ -1050,40 +1045,40 @@ class AtlasAI:
             "  !exit         Quit the assistant\n"
         )
 
-def _render_markdown_for_gui(self, text: str) -> str:
-    import html
-    # Escape HTML first
-    text = html.escape(text)
+    def _render_markdown_for_gui(self, text: str) -> str:
+        import html
+        # Escape HTML first
+        text = html.escape(text)
 
-    # Code blocks (``` ... ```)
-    text = re.sub(
-        r'```(\w+)?\n?(.*?)```',
-        lambda m: f"<pre style='background:#0d1117; color:#c9d1d9; padding:8px; border-radius:6px; font-family:monospace; white-space:pre-wrap;'>{m.group(2)}</pre>",
-        text, flags=re.DOTALL
-    )
+        # Code blocks (``` ... ```)
+        text = re.sub(
+            r'```(\w+)?\n?(.*?)```',
+            lambda m: f"<pre style='background:#0d1117; color:#c9d1d9; padding:8px; border-radius:6px; font-family:monospace; white-space:pre-wrap;'>{m.group(2)}</pre>",
+            text, flags=re.DOTALL
+        )
 
-    # Inline code
-    text = re.sub(r'`([^`]+)`', r"<code style='background:#0d1117; color:#c9d1d9; padding:2px 4px; border-radius:3px; font-family:monospace;'>\1</code>", text)
+        # Inline code
+        text = re.sub(r'`([^`]+)`', r"<code style='background:#0d1117; color:#c9d1d9; padding:2px 4px; border-radius:3px; font-family:monospace;'>\1</code>", text)
 
-    # Bold
-    text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
+        # Bold
+        text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
 
-    # Italic
-    text = re.sub(r'\*(.+?)\*', r'<i>\1</i>', text)
+        # Italic
+        text = re.sub(r'\*(.+?)\*', r'<i>\1</i>', text)
 
-    # Headers
-    text = re.sub(r'^### (.+)$', r"<h3 style='color:#93c5fd;'>\1</h3>", text, flags=re.MULTILINE)
-    text = re.sub(r'^## (.+)$', r"<h2 style='color:#93c5fd;'>\1</h2>", text, flags=re.MULTILINE)
-    text = re.sub(r'^# (.+)$', r"<h1 style='color:#93c5fd;'>\1</h1>", text, flags=re.MULTILINE)
+        # Headers
+        text = re.sub(r'^### (.+)$', r"<h3 style='color:#93c5fd;'>\1</h3>", text, flags=re.MULTILINE)
+        text = re.sub(r'^## (.+)$', r"<h2 style='color:#93c5fd;'>\1</h2>", text, flags=re.MULTILINE)
+        text = re.sub(r'^# (.+)$', r"<h1 style='color:#93c5fd;'>\1</h1>", text, flags=re.MULTILINE)
 
-    # Bullet points
-    text = re.sub(r'^\s*[-*] (.+)$', r'<li>\1</li>', text, flags=re.MULTILINE)
-    text = re.sub(r'(<li>.*</li>)', r'<ul>\1</ul>', text, flags=re.DOTALL)
+        # Bullet points
+        text = re.sub(r'^\s*[-*] (.+)$', r'<li>\1</li>', text, flags=re.MULTILINE)
+        text = re.sub(r'(<li>.*</li>)', r'<ul>\1</ul>', text, flags=re.DOTALL)
 
-    # Newlines (outside of pre blocks)
-    text = re.sub(r'\n', '<br>', text)
+        # Newlines (outside of pre blocks)
+        text = re.sub(r'\n', '<br>', text)
 
-    return text
+        return text
 
 if _HAS_QT:
     class ResponseThread(QThread):

@@ -3,3 +3,4 @@ __pycache__/
 *.gguf
 test.py
 system_prompt.md
+.venv/

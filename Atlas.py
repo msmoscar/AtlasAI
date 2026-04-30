@@ -9,7 +9,7 @@ import requests
 import sys
 import time
 import html
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 try:
     import numpy as np
@@ -161,7 +161,7 @@ def load_markdown_file(filename: str) -> str:
 SYSTEM_PROMPT = load_markdown_file("system_prompt.md")
 # End of system prompt")
 # Printing the if it used the default prompt instead of the file-based one, to make it clear to the user what is being used.
-if SYSTEM_PROMPT.endswith("system_prompt.md") or "You are Atlas, a high-performance reasoning assistant" in SYSTEM_PROMPT:
+if not SYSTEM_PROMPT:
     print("System prompt not found. Please create a file named 'system_prompt.md' in the same directory as Atlas.py with your desired prompt content.")
 else:
     print("Loaded system prompt from 'system_prompt.md'.")
@@ -266,7 +266,7 @@ class MemoryStore:
             return []
         scores = np.dot(self.embeddings, query_emb)
         now = time.time()
-        scored: List[tuple[float, Dict[str, Any]]] = []
+        scored: List[Tuple[float, Dict[str, Any]]] = []
         for i, sim in enumerate(scores.tolist()):
             entry = self.entries[i]
             age = now - entry.get("timestamp", now)
@@ -358,7 +358,7 @@ def extract_json_text(text: str) -> str:
                 continue
             if c == '"':
                 in_string = not in_string
-                continueadd_memory_if_relevant 
+                continue
             if in_string:
                 continue
             if c in openers:
@@ -401,8 +401,9 @@ def format_conversation(history: List[Dict[str, str]]) -> str:
         return "No previous conversation."
     lines = []
     for item in history[-20:]:
-        prefix = "User" if item["role"] == "user" else "Assistant"
-        lines.append(f"{prefix}: {item['message']}")
+        prefix = "User" if item.get("role") == "user" else "Assistant"
+        message = item.get("message", "")
+        lines.append(f"{prefix}: {message}")
     return "\n".join(lines)
 
 
@@ -758,7 +759,7 @@ class AtlasAI:
             return True
         return False
 
-    def _prepare_query(self, user: str) -> tuple[str, str, str]:
+    def _prepare_query(self, user: str) -> Tuple[str, str, str]:
         web_summary = ""
         web_sources = ""
         query = user
@@ -789,19 +790,22 @@ class AtlasAI:
             stream=False,
         )
 
-        if isinstance(response, dict):
-            choices = response.get("choices")
-            if isinstance(choices, list) and choices:
-                text = choices[0].get("text", "").strip()
+        try:
+            if isinstance(response, dict):
+                choices = response.get("choices")
+                if isinstance(choices, list) and choices:
+                    text = str(choices[0].get("text", "")).strip()
+                else:
+                    text = str(response.get("text", "")).strip()
             else:
-                text = response.get("text", "").strip()
-        else:
-            text = str(response).strip()
+                text = str(response).strip()
+        except Exception as exc:
+            text = f"[Error parsing model response: {exc}]"
 
         self.last_raw_response = text
         return text
 
-    def _split_answer_details(self, text: str) -> tuple[str, str]:
+    def _split_answer_details(self, text: str) -> Tuple[str, str]:
         text = text.strip()
         markers = ["\nDetails:", "\nThoughts:", "\nReasoning:", "\nThought:", "\nDetail:"]
         for marker in markers:
@@ -823,7 +827,7 @@ class AtlasAI:
             self._auto_save_memory(user, answer)
         return answer
 
-    def respond_with_details(self, user: str) -> tuple[str, str]:
+    def respond_with_details(self, user: str) -> Tuple[str, str]:
         if not user:
             return "", ""
         special = self._handle_special_cases(user)
@@ -938,12 +942,6 @@ class AtlasAI:
         if save and summary:
             self.memory.add(summary, tag=tag, weight=weight, source="auto")
 
-            save = bool(decision.get("save", False))
-            summary = str(decision.get("summary", "")).strip()
-            tag = str(decision.get("tag", "fact")).strip() or "fact"
-            if save and summary:
-                self.memory.add(summary, tag=tag, weight=weight, source="auto")
-
     def _detect_save_intent(self, user: str) -> Optional[str]:
         """Return the text to save if the user explicitly asks Atlas to remember something."""
         lowered = user.lower().strip()
@@ -1043,47 +1041,14 @@ class AtlasAI:
             "  !memory       Show recent memory entries\n"
             "  !clear        Clear all saved memory\n"
             "  !remember X   Save a note to memory\n"
-            "  !savechat     Save the full chat history to disk\n"
+            "  !savechat X   Save the full chat history to disk under name X\n"
+            "  !loadchat X   Load a saved chat by name\n"
+            "  !listchats    List all saved chats\n"
             "  !chatlog      Show saved chat log location\n"
             "  !loadmodel X  Load a new GGUF model at runtime\n"
             "  !model X      Alias for !loadmodel\n"
             "  !exit         Quit the assistant\n"
         )
-
-def _render_markdown_for_gui(self, text: str) -> str:
-    import html
-    # Escape HTML first
-    text = html.escape(text)
-
-    # Code blocks (``` ... ```)
-    text = re.sub(
-        r'```(\w+)?\n?(.*?)```',
-        lambda m: f"<pre style='background:#0d1117; color:#c9d1d9; padding:8px; border-radius:6px; font-family:monospace; white-space:pre-wrap;'>{m.group(2)}</pre>",
-        text, flags=re.DOTALL
-    )
-
-    # Inline code
-    text = re.sub(r'`([^`]+)`', r"<code style='background:#0d1117; color:#c9d1d9; padding:2px 4px; border-radius:3px; font-family:monospace;'>\1</code>", text)
-
-    # Bold
-    text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
-
-    # Italic
-    text = re.sub(r'\*(.+?)\*', r'<i>\1</i>', text)
-
-    # Headers
-    text = re.sub(r'^### (.+)$', r"<h3 style='color:#93c5fd;'>\1</h3>", text, flags=re.MULTILINE)
-    text = re.sub(r'^## (.+)$', r"<h2 style='color:#93c5fd;'>\1</h2>", text, flags=re.MULTILINE)
-    text = re.sub(r'^# (.+)$', r"<h1 style='color:#93c5fd;'>\1</h1>", text, flags=re.MULTILINE)
-
-    # Bullet points
-    text = re.sub(r'^\s*[-*] (.+)$', r'<li>\1</li>', text, flags=re.MULTILINE)
-    text = re.sub(r'(<li>.*</li>)', r'<ul>\1</ul>', text, flags=re.DOTALL)
-
-    # Newlines (outside of pre blocks)
-    text = re.sub(r'\n', '<br>', text)
-
-    return text
 
 if _HAS_QT:
     class ResponseThread(QThread):

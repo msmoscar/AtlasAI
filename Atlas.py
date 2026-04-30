@@ -445,7 +445,7 @@ class AtlasAI:
         self.gpu_layers = int(os.environ.get("ATLASAI_GPU_LAYERS", DEFAULT_GPU_LAYERS))
         model_kwargs = {
             "model_path": model_path,
-            "n_ctx": 16384,
+            "n_ctx": _auto_detect_context_size(),
             "main_gpu": 0,
             "n_gpu_layers": self.gpu_layers,
             "n_threads": os.cpu_count() or 1,
@@ -942,6 +942,38 @@ class AtlasAI:
             pass
         return 0
 
+    def _auto_detect_context_size(model_vram_mb: int = 4096, safety_buffer_mb: int = 512) -> int:
+        """
+        Query free VRAM and calculate the maximum safe context window.
+        model_vram_mb: estimated VRAM used by the model weights (default 4GB for 7B Q4)
+        safety_buffer_mb: headroom to leave free (default 512MB)
+        """
+        env_ctx = os.environ.get("ATLASAI_CTX_SIZE")
+        if env_ctx:
+            try:
+                return max(512, int(env_ctx))
+            except ValueError:
+                pass
+        try:
+            import subprocess
+            result = subprocess.run(
+                ["nvidia-smi", "--query-gpu=memory.total,memory.free", "--format=csv,noheader,nounits"],
+                capture_output=True, text=True
+            )
+            total_mb, free_mb = (int(x.strip()) for x in result.stdout.strip().split(","))
+            # VRAM available for KV cache after model weights + safety buffer
+            available_mb = free_mb - safety_buffer_mb
+            if available_mb <= 0:
+                return 4096  # fallback
+            # Qwen2.5 7B: ~0.5MB per 1k tokens in KV cache
+            max_tokens = int((available_mb / 0.5) * 1024)
+            # Clamp between 4k and 128k (Qwen2.5 7B max)
+            print(f"[Atlas] Auto-detected context size: {max_tokens} tokens")
+            return max(4096, min(max_tokens, 131072))
+        except Exception:
+            pass    
+        print("Using safe default context size. of 16k tokens.")    
+        return 16382 # safe default fallback
 
     def add_memory_if_relevant(self, user: str, response: str) -> None:
         # Explicit save-intent: extract what to remember and persist it immediately.

@@ -212,8 +212,15 @@ class MemoryStore:
             "timestamp": now,
         }
         self.entries.append(entry)
-        self._build_embeddings()
-        self.save()
+    
+        # Only embed the new entry and append instead of rebuilding everything
+        new_emb = self._embed_text([text.strip()])
+        if self.embeddings is None:
+            self.embeddings = new_emb
+        else:
+            self.embeddings = np.vstack([self.embeddings, new_emb])
+    
+    self.save()
 
     def search(self, query: str, top_k: int = 4) -> List[str]:
         if not self.entries:
@@ -231,14 +238,20 @@ class MemoryStore:
             type_weight = ENGRAM_TYPE_WEIGHTS.get(entry.get("tag", "fact"), 1.0)
             weight = float(entry.get("weight", 1.0)) * type_weight
             score = float(sim) * weight * decay
-            if score > 0.0:
-                scored.append((score, entry))
+            scored.append((score, entry))
 
+        # Dynamic threshold — mean + fraction of std dev
+        all_scores = [s for s, _ in scored]
+        if all_scores:
+            mean = np.mean(all_scores)
+            std = np.std(all_scores)
+            threshold = max(0.05, mean + 0.3 * std)
+        else:
+            threshold = 0.05
+
+        scored = [(s, e) for s, e in scored if s > threshold]
         scored.sort(reverse=True, key=lambda item: item[0])
-        results: List[str] = []
-        for score, entry in scored[:top_k]:
-            results.append(entry["text"])
-        return results
+        return [entry["text"] for _, entry in scored[:top_k]]
 
     def save(self) -> None:
         with open(self.path, "w", encoding="utf-8") as fh:
@@ -309,7 +322,7 @@ def extract_json_text(text: str) -> str:
                 continue
             if c == '"':
                 in_string = not in_string
-                continue
+                continueadd_memory_if_relevant 
             if in_string:
                 continue
             if c in openers:
@@ -838,9 +851,28 @@ class AtlasAI:
         escaped = re.sub(r"(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)", r"<em>\1</em>", escaped)
         return escaped.replace("\n", "<br>")
 
-    def _auto_save_memory(self, user: str, response: str) -> None:
+    def _auto_save_memory(self, user: str, response: str, force_save: bool = False, tag: str = "fact", weight: float = 1.2) -> None:
         if self.llm is None:
             return
+
+        if force_save:
+            summarize_prompt = (
+                "Summarize the following into a single clean memory entry, max 20 words. "
+                "Return only the summary, nothing else.\n\n"
+                f"User: {user}\nAssistant: {response}"
+            )
+            try:
+                result = self.llm(summarize_prompt, max_tokens=60, temperature=0.0, stream=False)
+                if isinstance(result, dict):
+                    summary = result.get("choices", [{"text": ""}])[0].get("text", "").strip()
+                else:
+                    summary = str(result).strip()
+                if summary:
+                    self.memory.add(summary, tag=tag, weight=weight, source="user_request")
+            except Exception:
+                pass
+            return
+
         decision_prompt = (
             "You are a memory curator for AtlasAI. Decide if the following exchange should be saved to long-term memory. "
             "Save only user preferences, stable personal data, recurring goals, important facts, project details, or useful web discoveries. "
@@ -863,9 +895,15 @@ class AtlasAI:
 
         save = bool(decision.get("save", False))
         summary = str(decision.get("summary", "")).strip()
-        tag = str(decision.get("tag", "fact")).strip() or "fact"
+        tag = str(decision.get("tag", tag)).strip() or tag
         if save and summary:
-            self.memory.add(summary, tag=tag, weight=1.2, source="auto")
+            self.memory.add(summary, tag=tag, weight=weight, source="auto")
+
+            save = bool(decision.get("save", False))
+            summary = str(decision.get("summary", "")).strip()
+            tag = str(decision.get("tag", "fact")).strip() or "fact"
+            if save and summary:
+                self.memory.add(summary, tag=tag, weight=weight, source="auto")
 
     def _detect_save_intent(self, user: str) -> Optional[str]:
         """Return the text to save if the user explicitly asks Atlas to remember something."""

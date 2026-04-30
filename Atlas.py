@@ -53,6 +53,8 @@ except Exception:
     Qt = QTimer = Signal = QThread = QApplication = QWidget = QVBoxLayout = QHBoxLayout = QLabel = QLineEdit = QPushButton = QScrollArea = QMenuBar = QAction = QTextEdit = QDialog = QFileDialog = QInputDialog = None
     _HAS_QT = False
 
+# Prefiring the GPU can help reduce latency on the first query, so we do a quick check here to see if we can use it and set the default number of layers accordingly.
+# Prefiring n_ctx window to set automatically based on available VRAM or system RAM, with a safety buffer to avoid OOM crashes. This is a best-effort approach and may not be perfect, but it should help optimize the default settings for most users without requiring manual configuration.
 def _auto_detect_gpu_layers() -> int:
     env_layers = os.environ.get("ATLASAI_GPU_LAYERS")
     if env_layers:
@@ -72,6 +74,46 @@ def _auto_detect_gpu_layers() -> int:
     except Exception:
         pass
     return 0
+
+def _auto_detect_context_size(safety_buffer_mb: int = 512) -> int:
+    try:
+        import psutil
+        print(f"[Atlas] psutil available: {psutil.virtual_memory().available // (1024*1024)}MB free RAM")
+    except Exception as e:
+        print(f"[Atlas] psutil branch failed: {e}")
+    env_ctx = os.environ.get("ATLASAI_CTX_SIZE")
+    if env_ctx:
+        try:
+            return max(512, int(env_ctx))
+        except ValueError:
+            pass
+    # Try VRAM first (GPU path)
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=memory.total,memory.free", "--format=csv,noheader,nounits"],
+            capture_output=True, text=True
+        )
+        total_mb, free_mb = (int(x.strip()) for x in result.stdout.strip().split(","))
+        available_mb = free_mb - safety_buffer_mb
+        if available_mb > 0:
+            max_tokens = int((available_mb / 0.5) * 1024)
+            return max(4096, min(max_tokens, 131072))
+    except Exception:
+        pass
+    # Fall back to system RAM (CPU path) - much more conservative
+    try:
+        import psutil
+        free_mb = psutil.virtual_memory().available // (1024 * 1024)
+        available_mb = free_mb - safety_buffer_mb
+        if available_mb > 0:
+            max_tokens = int((available_mb / 0.5) * 1024)
+            print(f"[Atlas] calculated max_tokens: {max_tokens}")
+            return max(4096, min(max_tokens, 32768))  # cap at 32k for CPU
+    except Exception:
+        pass
+    print("[Atlas] fell through to default context size")
+    return 16384
 
 MEMORY_DIR = os.path.join(pathlib.Path.home(), ".AtlasAI")
 CHAT_LOG_DIR = os.path.join(MEMORY_DIR, "chats")
@@ -111,22 +153,11 @@ def load_markdown_file(filename: str) -> str:
 
 
 # new system prompt taking from a file instead of hardcoding it here, with a fallback to the old prompt if the file is not found or cannot be read.
-SYSTEM_PROMPT = load_markdown_file("system_prompt.md") or (
-    "You are Atlas, a high-performance reasoning assistant. "
-    "Your answers should feel polished, confident, and trustworthy like a leading AI service. "
-    "Always prioritize accuracy, avoid hallucination, and keep your response concise. "
-    "You do not read files directly. Instead, all available memory is provided to you inside the prompt sections named MEMORY_FILE_SNAPSHOT and RELEVANT_MEMORY_HITS. "
-    "Treat those sections as authoritative memory input and use them when relevant. "
-    "Do not claim you cannot access memory when those sections are present. "
-    "You also have access to web search results for current information. "
-    "Use the web results when they help answer the user's question, especially for recent events, news, or factual queries. "
-    "If the web or memory information is not useful, you may ignore it. "
-    "When solving problems, think through the steps carefully and then respond with a short answer followed by an optional brief explanation. "
-    "If you are uncertain, say That you don't know rather than inventing details."
-)
+SYSTEM_PROMPT = load_markdown_file("system_prompt.md")
+# End of system prompt")
 # Printing the if it used the default prompt instead of the file-based one, to make it clear to the user what is being used.
 if SYSTEM_PROMPT.endswith("system_prompt.md") or "You are Atlas, a high-performance reasoning assistant" in SYSTEM_PROMPT:
-    print("Using default system prompt. To customize, create a file named 'system_prompt.md' in the same directory as Atlas.py with your desired prompt content.")
+    print("System prompt not found. Please create a file named 'system_prompt.md' in the same directory as Atlas.py with your desired prompt content.")
 else:
     print("Loaded system prompt from 'system_prompt.md'.")
 PROMPT_TEMPLATE = (
@@ -219,8 +250,8 @@ class MemoryStore:
             self.embeddings = new_emb
         else:
             self.embeddings = np.vstack([self.embeddings, new_emb])
-    
-    self.save()
+        
+        self.save()
 
     def search(self, query: str, top_k: int = 4) -> List[str]:
         if not self.entries:
@@ -921,59 +952,6 @@ class AtlasAI:
                 if len(captured) >= 4:
                     return captured
         return None
-
-    def _auto_detect_gpu_layers() -> int:
-        env_layers = os.environ.get("ATLASAI_GPU_LAYERS")
-        if env_layers:
-            try:
-                return max(0, int(env_layers))
-            except ValueError:
-                pass
-        try:
-            import subprocess
-            result = subprocess.run(
-                ["nvidia-smi", "--query-gpu=memory.free", "--format=csv,noheader,nounits"],
-                capture_output=True, text=True
-            )
-            free_mb = int(result.stdout.strip())
-            layers = max(0, (free_mb - 512) // 150)
-            return min(layers, 99)
-        except Exception:
-            pass
-        return 0
-
-    def _auto_detect_context_size(model_vram_mb: int = 4096, safety_buffer_mb: int = 512) -> int:
-        """
-        Query free VRAM and calculate the maximum safe context window.
-        model_vram_mb: estimated VRAM used by the model weights (default 4GB for 7B Q4)
-        safety_buffer_mb: headroom to leave free (default 512MB)
-        """
-        env_ctx = os.environ.get("ATLASAI_CTX_SIZE")
-        if env_ctx:
-            try:
-                return max(512, int(env_ctx))
-            except ValueError:
-                pass
-        try:
-            import subprocess
-            result = subprocess.run(
-                ["nvidia-smi", "--query-gpu=memory.total,memory.free", "--format=csv,noheader,nounits"],
-                capture_output=True, text=True
-            )
-            total_mb, free_mb = (int(x.strip()) for x in result.stdout.strip().split(","))
-            # VRAM available for KV cache after model weights + safety buffer
-            available_mb = free_mb - safety_buffer_mb
-            if available_mb <= 0:
-                return 4096  # fallback
-            # Qwen2.5 7B: ~0.5MB per 1k tokens in KV cache
-            max_tokens = int((available_mb / 0.5) * 1024)
-            # Clamp between 4k and 128k (Qwen2.5 7B max)
-            print(f"[Atlas] Auto-detected context size: {max_tokens} tokens")
-            return max(4096, min(max_tokens, 131072))
-        except Exception:
-            pass    
-        print("Using safe default context size. of 16k tokens.")    
-        return 16382 # safe default fallback
 
     def add_memory_if_relevant(self, user: str, response: str) -> None:
         # Explicit save-intent: extract what to remember and persist it immediately.

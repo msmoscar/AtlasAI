@@ -17,7 +17,7 @@ except ImportError:
     raise ImportError("Atlas requires numpy. Install it with: pip install numpy")
 
 try:
-    from llama_cpp import Llama
+    from llama_cpp import Llama  # type: ignore[import]
 except Exception:
     Llama = None
 

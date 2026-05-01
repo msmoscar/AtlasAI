@@ -1,7 +1,6 @@
 __pycache__/
 *.bin
 *.gguf
-test.py
 system_prompt.md
 .venv/
 .idea

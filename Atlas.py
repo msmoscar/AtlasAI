@@ -17,7 +17,7 @@ except ImportError:
     raise ImportError("Atlas requires numpy. Install it with: pip install numpy")
 
 try:
-    from llama_cpp import Llama
+    from llama_cpp import Llama  # type: ignore[import]
 except Exception:
     Llama = None
 
@@ -127,7 +127,9 @@ CHAT_LOG_FILE = os.path.join(MEMORY_DIR, "chat_history.jsonl")
 MODEL_SEARCH_DIR = os.path.expanduser("~/Documents/Ai_Models/")
 EMBED_MODEL = "all-MiniLM-L6-v2"
 EMBED_DIM = 384
-DUCKDUCKGO_API = "https://api.duckduckgo.com/"
+SEARXNG_URL = os.environ.get("SEARXNG_URL")
+SEARXNG_API_KEY = os.environ.get("SEARXNG_API_KEY")
+DUCKDUCKGO_API = "https://duckduckgo.com/"
 DUCKDUCKGO_TIMEOUT = 15
 HALF_LIFE_SECONDS = 60 * 60 * 24 * 7
 DEFAULT_GPU_LAYERS = _auto_detect_gpu_layers()
@@ -159,7 +161,6 @@ def load_markdown_file(filename: str) -> str:
 
 # new system prompt taking from a file instead of hardcoding it here, with a fallback to the old prompt if the file is not found or cannot be read.
 SYSTEM_PROMPT = load_markdown_file("system_prompt.md")
-# End of system prompt")
 # Printing the if it used the default prompt instead of the file-based one, to make it clear to the user what is being used.
 if not SYSTEM_PROMPT:
     print("System prompt not found. Please create a file named 'system_prompt.md' in the same directory as Atlas.py with your desired prompt content.")
@@ -408,7 +409,53 @@ def format_conversation(history: List[Dict[str, str]]) -> str:
     return "\n".join(lines)
 
 
+def _searxng_search(query: str, max_results: int = 4) -> Optional[Dict[str, Any]]:
+    """Search using custom searXNG instance. Returns None if failed."""
+    if not SEARXNG_URL:
+        return None
+    
+    try:
+        params = {
+            "q": query,
+            "format": "json",
+        }
+        headers = {}
+        if SEARXNG_API_KEY:
+            headers["Authorization"] = f"Bearer {SEARXNG_API_KEY}"
+        
+        response = requests.get(SEARXNG_URL, params=params, headers=headers, timeout=DUCKDUCKGO_TIMEOUT)
+        response.raise_for_status()
+        data = response.json()
+    except Exception:
+        return None
+    
+    results = data.get("results", [])
+    sources: List[Dict[str, str]] = []
+    summary = ""
+    
+    for result in results[:max_results]:
+        if "title" in result and "url" in result:
+            sources.append({
+                "title": result.get("title", ""),
+                "url": result.get("url", "")
+            })
+            if not summary and "content" in result:
+                summary = result.get("content", "")
+    
+    if not summary and sources:
+        summary = sources[0].get("title", "")
+    
+    return {"query": query, "summary": summary.strip(), "sources": sources}
+
+
 def duckduckgo_search(query: str, max_results: int = 4) -> Dict[str, Any]:
+    """Search using searXNG if available, fallback to DuckDuckGo."""
+    # Try searXNG first if configured
+    searxng_result = _searxng_search(query, max_results)
+    if searxng_result is not None:
+        return searxng_result
+    
+    # Fallback to DuckDuckGo
     try:
         params = {
             "q": query,
@@ -1059,27 +1106,33 @@ class AtlasAI:
         # Code blocks (``` ... ```)
         text = re.sub(
             r'```(\w+)?\n?(.*?)```',
-            lambda m: f"<pre style='background:#0d1117; color:#c9d1d9; padding:8px; border-radius:6px; font-family:monospace; white-space:pre-wrap;'>{m.group(2)}</pre>",
+            lambda m: f"<pre style='background:#0d1117; color:#c9d1d9; padding:12px; border-radius:6px; font-family:monospace; font-size:13px; white-space:pre-wrap; border: 1px solid #30363d;'>{m.group(2)}</pre>",
             text, flags=re.DOTALL
         )
 
-        # Inline code
-        text = re.sub(r'`([^`]+)`', r"<code style='background:#0d1117; color:#c9d1d9; padding:2px 4px; border-radius:3px; font-family:monospace;'>\1</code>", text)
+        # Inline code with better styling
+        text = re.sub(r'`([^`]+)`', r"<code style='background:#1e293b; color:#60a5fa; padding:2px 6px; border-radius:3px; font-family:monospace; font-size:13px;'>\1</code>", text)
 
         # Bold
-        text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
+        text = re.sub(r'\*\*(.+?)\*\*', r'<b style="color: #f0f6fc;">\1</b>', text)
 
-        # Italic
-        text = re.sub(r'\*(.+?)\*', r'<i>\1</i>', text)
+        # Italic  
+        text = re.sub(r'\*(.+?)\*', r'<i style="color: #cbd5e1;">\1</i>', text)
 
-        # Headers
-        text = re.sub(r'^### (.+)$', r"<h3 style='color:#93c5fd;'>\1</h3>", text, flags=re.MULTILINE)
-        text = re.sub(r'^## (.+)$', r"<h2 style='color:#93c5fd;'>\1</h2>", text, flags=re.MULTILINE)
-        text = re.sub(r'^# (.+)$', r"<h1 style='color:#93c5fd;'>\1</h1>", text, flags=re.MULTILINE)
+        # Headers with better hierarchy
+        text = re.sub(r'^### (.+)$', r"<h3 style='color:#60a5fa; font-size: 15px; font-weight: 700; margin: 12px 0px 6px 0px;'>\1</h3>", text, flags=re.MULTILINE)
+        text = re.sub(r'^## (.+)$', r"<h2 style='color:#60a5fa; font-size: 18px; font-weight: 700; margin: 16px 0px 8px 0px;'>\1</h2>", text, flags=re.MULTILINE)
+        text = re.sub(r'^# (.+)$', r"<h1 style='color:#60a5fa; font-size: 20px; font-weight: 700; margin: 20px 0px 10px 0px;'>\1</h1>", text, flags=re.MULTILINE)
 
-        # Bullet points
-        text = re.sub(r'^\s*[-*] (.+)$', r'<li>\1</li>', text, flags=re.MULTILINE)
-        text = re.sub(r'(<li>.*</li>)', r'<ul>\1</ul>', text, flags=re.DOTALL)
+        # Bullet points with better styling
+        text = re.sub(r'^\s*[-*] (.+)$', r'<li style="margin-left: 20px; margin-bottom: 4px;">\1</li>', text, flags=re.MULTILINE)
+        text = re.sub(r'(<li.*?</li>)', r'<ul style="list-style-type: disc; padding: 0px;">\1</ul>', text, flags=re.DOTALL)
+
+        # Blockquotes
+        text = re.sub(r'^&gt; (.+)$', r"<blockquote style='border-left: 3px solid #60a5fa; padding-left: 12px; color: #cbd5e1; margin: 8px 0px; font-style: italic;'>\1</blockquote>", text, flags=re.MULTILINE)
+
+        # Links
+        text = re.sub(r'\[(.+?)\]\((.+?)\)', r'<a href="\2" style="color: #60a5fa; text-decoration: underline;">\1</a>', text)
 
         # Newlines (outside of pre blocks)
         text = re.sub(r'\n', '<br>', text)
@@ -1107,18 +1160,43 @@ if _HAS_QT:
         def __init__(self, assistant: "AtlasAI", role: str, text: str, details: str = ""):
             super().__init__()
             self.assistant = assistant
-            layout = QVBoxLayout(self)
-            layout.setSpacing(4)
-
+            self.role = role.lower()
+            
+            # Create a container layout that handles left/right alignment
+            container_layout = QHBoxLayout(self)
+            container_layout.setContentsMargins(0, 0, 0, 0)
+            container_layout.setSpacing(0)
+            
+            # Add stretch to left or right depending on role
+            if self.role != "atlas":
+                container_layout.addStretch()
+            
+            # Main message bubble
+            bubble_widget = QWidget()
+            bubble_layout = QVBoxLayout(bubble_widget)
+            bubble_layout.setSpacing(8)
+            bubble_layout.setContentsMargins(16, 14, 16, 14)
+            
+            # Role indicator
             role_label = QLabel(role)
-            role_label.setStyleSheet("color: #94a3b8; font-weight: 700; margin-bottom: 4px;")
-            layout.addWidget(role_label)
-
+            if self.role == "atlas":
+                role_label.setStyleSheet("color: #60a5fa; font-weight: 700; font-size: 13px; margin-bottom: 2px;")
+            else:
+                role_label.setStyleSheet("color: #94a3b8; font-weight: 700; font-size: 13px; margin-bottom: 2px;")
+            bubble_layout.addWidget(role_label)
+            
+            # Message content
             for widget in self._render_message(text):
-                layout.addWidget(widget)
-
+                bubble_layout.addWidget(widget)
+            
+            # Details toggle
             if details:
                 self.toggle_button = QPushButton("Show details")
+                self.toggle_button.setStyleSheet(
+                    "QPushButton { background: #334155; color: #cbd5e1; border-radius: 4px; padding: 4px 8px; font-size: 12px; }"
+                    "QPushButton:hover { background: #475569; }"
+                )
+                self.toggle_button.setMaximumWidth(100)
                 self.details_container = QWidget()
                 details_layout = QVBoxLayout(self.details_container)
                 details_layout.setContentsMargins(0, 0, 0, 0)
@@ -1126,13 +1204,24 @@ if _HAS_QT:
                     details_layout.addWidget(widget)
                 self.details_container.setVisible(False)
                 self.toggle_button.clicked.connect(self._toggle_details)
-                layout.addWidget(self.toggle_button)
-                layout.addWidget(self.details_container)
-
-            bubble_bg = "#1e293b" if role.lower() == "atlas" else "#111827"
-            self.setStyleSheet(
-                f"QWidget {{ border-radius: 16px; background: {bubble_bg}; margin: 4px; padding: 10px; }}"
-            ) 
+                bubble_layout.addWidget(self.toggle_button)
+                bubble_layout.addWidget(self.details_container)
+            
+            # Bubble styling based on role
+            if self.role == "atlas":
+                bubble_widget.setStyleSheet(
+                    "QWidget { border-radius: 12px; background: #1e293b; border: 1px solid #334155; margin: 8px 0px 8px 24px; }"
+                )
+            else:
+                bubble_widget.setStyleSheet(
+                    "QWidget { border-radius: 12px; background: #2563eb; border: none; margin: 8px 24px 8px 0px; }"
+                )
+            
+            container_layout.addWidget(bubble_widget, 0, Qt.AlignTop)
+            
+            # Add stretch to right or left depending on role
+            if self.role == "atlas":
+                container_layout.addStretch() 
 
         def _render_message(self, text: str) -> list:
             import html as htmllib
@@ -1142,26 +1231,32 @@ if _HAS_QT:
             for part in parts:
                 code_match = re.match(r'```(\w+)?\n?(.*?)```', part, flags=re.DOTALL)
                 if code_match:
+                    lang = code_match.group(1) or "plaintext"
                     code = code_match.group(2).rstrip()
 
-                    # Wrapper widget so we can stack the button over the text edit
+                    # Wrapper widget for code block
                     wrapper = QWidget()
-                    wrapper.setStyleSheet("QWidget { background: transparent; }")
+                    wrapper.setStyleSheet("QWidget { background: transparent; margin: 12px 0px; }")
                     wrapper_layout = QVBoxLayout(wrapper)
                     wrapper_layout.setContentsMargins(0, 0, 0, 0)
                     wrapper_layout.setSpacing(0)
 
-                    # Top bar with copy button aligned right
+                    # Top bar with language label and copy button
                     top_bar = QWidget()
-                    top_bar.setStyleSheet("QWidget { background: #0d1117; border-radius: 6px 6px 0px 0px; }")
+                    top_bar.setStyleSheet("QWidget { background: #0d1117; border-radius: 6px 6px 0px 0px; border-bottom: 1px solid #30363d; }")
                     top_bar_layout = QHBoxLayout(top_bar)
-                    top_bar_layout.setContentsMargins(8, 4, 8, 4)
+                    top_bar_layout.setContentsMargins(12, 8, 12, 8)
+                    
+                    lang_label = QLabel(lang)
+                    lang_label.setStyleSheet("color: #79c0ff; font-size: 11px; font-weight: 600; font-family: monospace;")
+                    top_bar_layout.addWidget(lang_label)
                     top_bar_layout.addStretch()
+                    
                     copy_btn = QPushButton("Copy")
-                    copy_btn.setFixedSize(60, 24)
+                    copy_btn.setFixedSize(60, 28)
                     copy_btn.setStyleSheet(
-                        "QPushButton { background: #334155; color: #94a3b8; border-radius: 4px; font-size: 11px; padding: 0px; }"
-                        "QPushButton:hover { background: #475569; color: #f8fafc; }"
+                        "QPushButton { background: #238636; color: #f0f6fc; border-radius: 4px; font-size: 12px; padding: 2px; font-weight: 600; border: none; }"
+                        "QPushButton:hover { background: #2da644; }"
                     )
                     copy_btn.clicked.connect(lambda checked, c=code: self._copy_code(c, copy_btn))
                     top_bar_layout.addWidget(copy_btn)
@@ -1173,15 +1268,14 @@ if _HAS_QT:
                     code_edit.setPlainText(code)
                     code_edit.setStyleSheet(
                         "QTextEdit { background-color: #0d1117 !important; color: #c9d1d9 !important; "
-                        "font-family: monospace; font-size: 13px; border-radius: 0px 0px 6px 6px; "
-                        "border: none; padding: 8px; }"
+                        "font-family: 'Consolas', 'Monaco', 'Courier New', monospace; font-size: 12px; "
+                        "border-radius: 0px 0px 6px 6px; border: none; padding: 12px; line-height: 1.5; }"
                     )
-                    # Auto-size height to content
-                    code_edit.setMinimumHeight(60)
-                    code_edit.setMaximumHeight(400)
+                    code_edit.setMinimumHeight(80)
+                    code_edit.setMaximumHeight(500)
                     code_edit.document().contentsChanged.connect(
                         lambda: code_edit.setFixedHeight(
-                            min(int(code_edit.document().size().height()) + 24, 400)
+                            min(int(code_edit.document().size().height()) + 24, 500)
                         )
                     )
                     wrapper_layout.addWidget(code_edit)
@@ -1190,7 +1284,7 @@ if _HAS_QT:
                     if not part.strip():
                         continue
                     rendered = self.assistant._render_markdown_for_gui(part) if hasattr(self.assistant, '_render_markdown_for_gui') else htmllib.escape(part).replace('\n', '<br>')
-                    label = QLabel(f"<div style='font-size:14px; color:#e2e8f0; line-height:1.6;'>{rendered}</div>")
+                    label = QLabel(f"<div style='font-size:15px; color:#e2e8f0; line-height:1.8; letter-spacing: 0.2px;'>{rendered}</div>")
                     label.setTextFormat(Qt.RichText)
                     label.setWordWrap(True)
                     label.setTextInteractionFlags(Qt.TextSelectableByMouse | Qt.LinksAccessibleByMouse)
@@ -1199,8 +1293,15 @@ if _HAS_QT:
 
         def _copy_code(self, code: str, button: "QPushButton") -> None:
             QApplication.clipboard().setText(code)
-            button.setText("Copied!")
-            QTimer.singleShot(2000, lambda: button.setText("Copy"))
+            original_text = button.text()
+            button.setText("✓ Copied")
+            button.setStyleSheet(
+                "QPushButton { background: #238636; color: #f0f6fc; border-radius: 4px; font-size: 12px; padding: 2px; font-weight: 600; border: none; }"
+            )
+            QTimer.singleShot(2000, lambda: (button.setText(original_text), button.setStyleSheet(
+                "QPushButton { background: #238636; color: #f0f6fc; border-radius: 4px; font-size: 12px; padding: 2px; font-weight: 600; border: none; }"
+                "QPushButton:hover { background: #2da644; }"
+            )))
 
         def _toggle_details(self) -> None:
             visible = not self.details_container.isVisible()
@@ -1213,33 +1314,53 @@ if _HAS_QT:
             super().__init__()
             self.assistant = assistant
             self.setWindowTitle("Atlas AI")
-            self.setGeometry(120, 80, 760, 520)
-            self.setMinimumSize(640, 460)
+            self.setGeometry(120, 80, 900, 600)
+            self.setMinimumSize(720, 500)
+            
+            # ChatGPT-inspired dark theme with Claude's polish
             self.setStyleSheet(
                 "QWidget { background: #0f172a; color: #e2e8f0; }"
-                "QPushButton { background: #2563eb; color: #f8fafc; border-radius: 8px; padding: 8px 12px; }"
-                "QPushButton:hover { background: #3b82f6; }"
-                "QLineEdit { background: #1e293b; color: #f8fafc; border: 1px solid #334155; border-radius: 12px; padding: 8px; }"
+                "QPushButton { background: #3b82f6; color: #ffffff; border-radius: 6px; padding: 8px 14px; font-weight: 600; border: none; }"
+                "QPushButton:hover { background: #2563eb; }"
+                "QPushButton:pressed { background: #1d4ed8; }"
+                "QLineEdit { background: #1e293b; color: #f8fafc; border: 1px solid #475569; border-radius: 8px; padding: 10px 14px; }"
+                "QLineEdit:focus { border: 2px solid #3b82f6; }"
                 "QLabel { color: #e2e8f0; }"
-                "QMenuBar { background: #0f172a; color: #cbd5e1; }"
-                "QMenuBar::item:selected { background: #334155; }"
+                "QMenuBar { background: #0f172a; color: #cbd5e1; border-bottom: 1px solid #1e293b; }"
+                "QMenuBar::item:selected { background: #1e293b; }"
+                "QMenu { background: #1e293b; color: #e2e8f0; border: 1px solid #334155; }"
+                "QMenu::item:selected { background: #334155; }"
             )
 
             outer_layout = QVBoxLayout(self)
-            outer_layout.setContentsMargins(8, 8, 8, 8)
-            outer_layout.setSpacing(6)
-            header_layout = QHBoxLayout()
+            outer_layout.setContentsMargins(0, 0, 0, 0)
+            outer_layout.setSpacing(0)
+            
+            # Header with title and model info
+            header_widget = QWidget()
+            header_widget.setStyleSheet("QWidget { background: #0f172a; border-bottom: 1px solid #1e293b; }")
+            header_layout = QVBoxLayout(header_widget)
+            header_layout.setContentsMargins(16, 12, 16, 12)
+            header_layout.setSpacing(4)
+            
             title_label = QLabel("Atlas")
-            title_label.setStyleSheet("font-size: 20px; font-weight: 700; color: #f8fafc;")
-            subtitle_label = QLabel("meow")
-            subtitle_label.setStyleSheet("color: #94a3b8; font-size: 11px;")
+            title_label.setStyleSheet("font-size: 24px; font-weight: 700; color: #f8fafc;")
+            
+            subtitle_layout = QHBoxLayout()
+            model_name = os.path.basename(self.assistant.model_path) if self.assistant.model_path else "No model loaded"
+            subtitle_label = QLabel(model_name[:40])
+            subtitle_label.setStyleSheet("color: #94a3b8; font-size: 12px;")
+            subtitle_layout.addWidget(subtitle_label)
+            subtitle_layout.addStretch()
+            
             header_layout.addWidget(title_label)
-            header_layout.addStretch()
-            header_layout.addWidget(subtitle_label)
-            outer_layout.addLayout(header_layout)
+            header_layout.addLayout(subtitle_layout)
+            outer_layout.addWidget(header_widget)
 
+            # Menu bar
             menubar = QMenuBar()
             menubar.setMinimumHeight(24)
+            menubar.setStyleSheet("QMenuBar { background: #0f172a; color: #cbd5e1; border: none; padding: 0px 16px; }")
             file_menu = menubar.addMenu("File")
             self.chat_menu = menubar.addMenu("Chats")
             self.action_save_chat = QAction("Save Chat As...", self)
@@ -1263,7 +1384,7 @@ if _HAS_QT:
             self.action_show_debug.setCheckable(True)
             self.action_show_debug.toggled.connect(self._toggle_debug_panel)
             debug_menu.addAction(self.action_show_debug)
-            outer_layout.setMenuBar(menubar)
+            outer_layout.addWidget(menubar)
 
             self.debug_dialog = QDialog(self)
             self.debug_dialog.setWindowTitle("Atlas Debug")
@@ -1274,33 +1395,53 @@ if _HAS_QT:
             debug_layout.addWidget(self.debug_text)
             self.debug_dialog.setLayout(debug_layout)
 
+            # Chat area with clean scrolling
             self.scroll_area = QScrollArea()
             self.scroll_area.setWidgetResizable(True)
+            self.scroll_area.setStyleSheet("QScrollArea { border: none; background: #0f172a; }")
+            self.scroll_area.verticalScrollBar().setStyleSheet(
+                "QScrollBar:vertical { background: #0f172a; width: 8px; }"
+                "QScrollBar::handle:vertical { background: #475569; border-radius: 4px; }"
+                "QScrollBar::handle:vertical:hover { background: #64748b; }"
+            )
+            
             self.chat_container = QWidget()
+            self.chat_container.setStyleSheet("QWidget { background: #0f172a; }")
             self.chat_layout = QVBoxLayout(self.chat_container)
-            self.chat_layout.setContentsMargins(4, 4, 4, 4)
-            self.chat_layout.setSpacing(6)
+            self.chat_layout.setContentsMargins(16, 16, 16, 16)
+            self.chat_layout.setSpacing(16)
             self.chat_layout.addStretch()
             self.scroll_area.setWidget(self.chat_container)
-            self.scroll_area.setStyleSheet("QScrollArea { border: none; }")
 
-            input_layout = QHBoxLayout()
-            input_layout.setContentsMargins(0, 0, 0, 0)
-            input_layout.setSpacing(6)
+            # Input area with better styling
+            input_widget = QWidget()
+            input_widget.setStyleSheet("QWidget { background: #0f172a; border-top: 1px solid #1e293b; }")
+            input_layout = QVBoxLayout(input_widget)
+            input_layout.setContentsMargins(16, 12, 16, 16)
+            input_layout.setSpacing(8)
+            
+            input_field_layout = QHBoxLayout()
+            input_field_layout.setContentsMargins(0, 0, 0, 0)
+            input_field_layout.setSpacing(8)
             self.input_line = QLineEdit()
-            self.input_line.setPlaceholderText("Ask Atlas...")
+            self.input_line.setPlaceholderText("Ask Atlas anything...")
+            self.input_line.setMinimumHeight(40)
             self.input_line.returnPressed.connect(self.on_send)
             self.send_button = QPushButton("Send")
+            self.send_button.setMinimumHeight(40)
+            self.send_button.setMaximumWidth(80)
             self.send_button.clicked.connect(self.on_send)
-            input_layout.addWidget(self.input_line)
-            input_layout.addWidget(self.send_button)
-
+            input_field_layout.addWidget(self.input_line)
+            input_field_layout.addWidget(self.send_button)
+            
             self.status_label = QLabel("")
-            self.status_label.setStyleSheet("color: #94a3b8; font-size: 11px;")
+            self.status_label.setStyleSheet("color: #64748b; font-size: 12px; margin-left: 4px;")
+            
+            input_layout.addLayout(input_field_layout)
+            input_layout.addWidget(self.status_label)
 
             outer_layout.addWidget(self.scroll_area)
-            outer_layout.addLayout(input_layout)
-            outer_layout.addWidget(self.status_label)
+            outer_layout.addWidget(input_widget)
 
         def _append_chat(self, role: str, text: str, details: str = "") -> None:
             bubble = ChatBubble(self.assistant, role, text, details)

@@ -127,7 +127,9 @@ CHAT_LOG_FILE = os.path.join(MEMORY_DIR, "chat_history.jsonl")
 MODEL_SEARCH_DIR = os.path.expanduser("~/Documents/Ai_Models/")
 EMBED_MODEL = "all-MiniLM-L6-v2"
 EMBED_DIM = 384
-DUCKDUCKGO_API = "https://api.duckduckgo.com/"
+SEARXNG_URL = os.environ.get("SEARXNG_URL")
+SEARXNG_API_KEY = os.environ.get("SEARXNG_API_KEY")
+DUCKDUCKGO_API = "https://duckduckgo.com/"
 DUCKDUCKGO_TIMEOUT = 15
 HALF_LIFE_SECONDS = 60 * 60 * 24 * 7
 DEFAULT_GPU_LAYERS = _auto_detect_gpu_layers()
@@ -407,7 +409,53 @@ def format_conversation(history: List[Dict[str, str]]) -> str:
     return "\n".join(lines)
 
 
+def _searxng_search(query: str, max_results: int = 4) -> Optional[Dict[str, Any]]:
+    """Search using custom searXNG instance. Returns None if failed."""
+    if not SEARXNG_URL:
+        return None
+    
+    try:
+        params = {
+            "q": query,
+            "format": "json",
+        }
+        headers = {}
+        if SEARXNG_API_KEY:
+            headers["Authorization"] = f"Bearer {SEARXNG_API_KEY}"
+        
+        response = requests.get(SEARXNG_URL, params=params, headers=headers, timeout=DUCKDUCKGO_TIMEOUT)
+        response.raise_for_status()
+        data = response.json()
+    except Exception:
+        return None
+    
+    results = data.get("results", [])
+    sources: List[Dict[str, str]] = []
+    summary = ""
+    
+    for result in results[:max_results]:
+        if "title" in result and "url" in result:
+            sources.append({
+                "title": result.get("title", ""),
+                "url": result.get("url", "")
+            })
+            if not summary and "content" in result:
+                summary = result.get("content", "")
+    
+    if not summary and sources:
+        summary = sources[0].get("title", "")
+    
+    return {"query": query, "summary": summary.strip(), "sources": sources}
+
+
 def duckduckgo_search(query: str, max_results: int = 4) -> Dict[str, Any]:
+    """Search using searXNG if available, fallback to DuckDuckGo."""
+    # Try searXNG first if configured
+    searxng_result = _searxng_search(query, max_results)
+    if searxng_result is not None:
+        return searxng_result
+    
+    # Fallback to DuckDuckGo
     try:
         params = {
             "q": query,
@@ -1126,8 +1174,8 @@ if _HAS_QT:
             # Main message bubble
             bubble_widget = QWidget()
             bubble_layout = QVBoxLayout(bubble_widget)
-            bubble_layout.setSpacing(4)
-            bubble_layout.setContentsMargins(12, 10, 12, 10)
+            bubble_layout.setSpacing(8)
+            bubble_layout.setContentsMargins(16, 14, 16, 14)
             
             # Role indicator
             role_label = QLabel(role)
@@ -1162,11 +1210,11 @@ if _HAS_QT:
             # Bubble styling based on role
             if self.role == "atlas":
                 bubble_widget.setStyleSheet(
-                    "QWidget { border-radius: 12px; background: #1e293b; border: 1px solid #334155; margin: 6px 0px 6px 20px; }"
+                    "QWidget { border-radius: 12px; background: #1e293b; border: 1px solid #334155; margin: 8px 0px 8px 24px; }"
                 )
             else:
                 bubble_widget.setStyleSheet(
-                    "QWidget { border-radius: 12px; background: #2563eb; border: none; margin: 6px 20px 6px 0px; }"
+                    "QWidget { border-radius: 12px; background: #2563eb; border: none; margin: 8px 24px 8px 0px; }"
                 )
             
             container_layout.addWidget(bubble_widget, 0, Qt.AlignTop)
@@ -1188,7 +1236,7 @@ if _HAS_QT:
 
                     # Wrapper widget for code block
                     wrapper = QWidget()
-                    wrapper.setStyleSheet("QWidget { background: transparent; margin: 8px 0px; }")
+                    wrapper.setStyleSheet("QWidget { background: transparent; margin: 12px 0px; }")
                     wrapper_layout = QVBoxLayout(wrapper)
                     wrapper_layout.setContentsMargins(0, 0, 0, 0)
                     wrapper_layout.setSpacing(0)
@@ -1236,7 +1284,7 @@ if _HAS_QT:
                     if not part.strip():
                         continue
                     rendered = self.assistant._render_markdown_for_gui(part) if hasattr(self.assistant, '_render_markdown_for_gui') else htmllib.escape(part).replace('\n', '<br>')
-                    label = QLabel(f"<div style='font-size:14px; color:#e2e8f0; line-height:1.6; letter-spacing: 0.3px;'>{rendered}</div>")
+                    label = QLabel(f"<div style='font-size:15px; color:#e2e8f0; line-height:1.8; letter-spacing: 0.2px;'>{rendered}</div>")
                     label.setTextFormat(Qt.RichText)
                     label.setWordWrap(True)
                     label.setTextInteractionFlags(Qt.TextSelectableByMouse | Qt.LinksAccessibleByMouse)
@@ -1361,7 +1409,7 @@ if _HAS_QT:
             self.chat_container.setStyleSheet("QWidget { background: #0f172a; }")
             self.chat_layout = QVBoxLayout(self.chat_container)
             self.chat_layout.setContentsMargins(16, 16, 16, 16)
-            self.chat_layout.setSpacing(12)
+            self.chat_layout.setSpacing(16)
             self.chat_layout.addStretch()
             self.scroll_area.setWidget(self.chat_container)
 

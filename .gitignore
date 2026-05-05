@@ -2,7 +2,6 @@ __pycache__/
 *.bin
 *.gguf
 test.py
-system_prompt.md
-.venv/
 .idea
 .DS_STORE0;9u
+system_prompt.md

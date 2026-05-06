@@ -3,5 +3,5 @@ __pycache__/
 *.gguf
 test.py
 .idea
-.DS_STORE0;9u
 system_prompt.md
+.env

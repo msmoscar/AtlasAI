@@ -1,7 +1,7 @@
 __pycache__/
-*.bin
-*.gguf
-test.py
-.idea
-system_prompt.md
+*.bin/
+*.gguf/
+test.py/
+.idea/
+system_prompt.md/
 .env

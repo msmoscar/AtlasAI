@@ -199,7 +199,7 @@ def find_gguf_models(search_dir: str = MODEL_SEARCH_DIR) -> List[str]:
     results.sort()
     return results
 
-
+# "RAG brain" memory which stands for Retrieval-Augmented Generation, where we store facts, preferences, and other information in a vector database (in this case, a simple in-memory store with optional sentence transformer embeddings) and retrieve relevant pieces of information to include in the prompt for the language model. This allows the assistant to have a persistent memory that can be accessed and updated over time, improving its ability to provide accurate and contextually relevant responses.
 class MemoryStore:
     def __init__(self, path: str, embed_model_name: str = EMBED_MODEL):
         self.path = path

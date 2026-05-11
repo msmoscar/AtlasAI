@@ -391,7 +391,6 @@ def safe_eval_math(expression: str) -> str:
     except Exception:
         return ""
 
-
 def is_math_query(text: str) -> bool:
     if re.search(r"\d+\s*[\+\-\*/]\s*\d+", text):
         return True

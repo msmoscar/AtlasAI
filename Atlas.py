@@ -1415,42 +1415,110 @@ class AtlasAI:
         )
 
     def _render_markdown_for_gui(self, text: str) -> str:
-        import html
-        # Escape HTML first
-        text = html.escape(text)
+        import html as htmllib
 
-        # Code blocks (``` ... ```)
+        # Pull out code blocks first so we don't mangle their contents
+        code_blocks: list[str] = []
+        def stash_code_block(m: re.Match) -> str:
+            lang = m.group(1) or "plaintext"
+            code = htmllib.escape(m.group(2).rstrip())
+            block = (
+                f"<pre style='background:#0d1117; color:#c9d1d9; padding:12px; "
+                f"border-radius:6px; font-family:monospace; font-size:13px; "
+                f"white-space:pre-wrap; border:1px solid #30363d; margin:8px 0;'>"
+                f"<span style='color:#79c0ff; font-size:11px;'>{htmllib.escape(lang)}</span>\n{code}</pre>"
+            )
+            code_blocks.append(block)
+            return f"\x00CODE{len(code_blocks) - 1}\x00"
+
+        text = re.sub(r'```(\w+)?\n?(.*?)```', stash_code_block, text, flags=re.DOTALL)
+
+        # Escape remaining HTML
+        text = htmllib.escape(text)
+
+        # Escaped markdown characters (e.g. \* \_ \~)
+        text = re.sub(r'\\([*_~`#\-\[\]\\])', lambda m: f"\x01{ord(m.group(1))}\x01", text)
+
+        # Inline code
         text = re.sub(
-            r'```(\w+)?\n?(.*?)```',
-            lambda m: f"<pre style='background:#0d1117; color:#c9d1d9; padding:12px; border-radius:6px; font-family:monospace; font-size:13px; white-space:pre-wrap; border: 1px solid #30363d;'>{m.group(2)}</pre>",
-            text, flags=re.DOTALL
+            r'`([^`]+)`',
+            r"<code style='background:#1e293b; color:#60a5fa; padding:2px 6px; border-radius:3px; font-family:monospace; font-size:13px;'>\1</code>",
+            text
         )
 
-        # Inline code with better styling
-        text = re.sub(r'`([^`]+)`', r"<code style='background:#1e293b; color:#60a5fa; padding:2px 6px; border-radius:3px; font-family:monospace; font-size:13px;'>\1</code>", text)
+        # Bold + italic (*** or ___)
+        text = re.sub(r'\*\*\*(.+?)\*\*\*', r'<b><i style="color:#f0f6fc;">\1</i></b>', text)
 
-        # Bold
-        text = re.sub(r'\*\*(.+?)\*\*', r'<b style="color: #f0f6fc;">\1</b>', text)
+        # Bold (** or __)
+        text = re.sub(r'\*\*(.+?)\*\*', r'<b style="color:#f0f6fc;">\1</b>', text)
+        text = re.sub(r'__(.+?)__', r'<b style="color:#f0f6fc;">\1</b>', text)
 
-        # Italic  
-        text = re.sub(r'\*(.+?)\*', r'<i style="color: #cbd5e1;">\1</i>', text)
+        # Italic (* or _)
+        text = re.sub(r'\*(.+?)\*', r'<i style="color:#cbd5e1;">\1</i>', text)
+        text = re.sub(r'_(.+?)_', r'<i style="color:#cbd5e1;">\1</i>', text)
 
-        # Headers with better hierarchy
-        text = re.sub(r'^### (.+)$', r"<h3 style='color:#60a5fa; font-size: 15px; font-weight: 700; margin: 12px 0px 6px 0px;'>\1</h3>", text, flags=re.MULTILINE)
-        text = re.sub(r'^## (.+)$', r"<h2 style='color:#60a5fa; font-size: 18px; font-weight: 700; margin: 16px 0px 8px 0px;'>\1</h2>", text, flags=re.MULTILINE)
-        text = re.sub(r'^# (.+)$', r"<h1 style='color:#60a5fa; font-size: 20px; font-weight: 700; margin: 20px 0px 10px 0px;'>\1</h1>", text, flags=re.MULTILINE)
+        # Strikethrough
+        text = re.sub(r'~~(.+?)~~', r'<s style="color:#64748b;">\1</s>', text)
 
-        # Bullet points with better styling
-        text = re.sub(r'^\s*[-*] (.+)$', r'<li style="margin-left: 20px; margin-bottom: 4px;">\1</li>', text, flags=re.MULTILINE)
-        text = re.sub(r'(<li.*?</li>)', r'<ul style="list-style-type: disc; padding: 0px;">\1</ul>', text, flags=re.DOTALL)
+        # Headers (h3 before h2 before h1 to avoid greedy overlap)
+        text = re.sub(r'^### (.+)$', r"<h3 style='color:#60a5fa; font-size:15px; font-weight:700; margin:12px 0 6px 0;'>\1</h3>", text, flags=re.MULTILINE)
+        text = re.sub(r'^## (.+)$',  r"<h2 style='color:#60a5fa; font-size:18px; font-weight:700; margin:16px 0 8px 0;'>\1</h2>", text, flags=re.MULTILINE)
+        text = re.sub(r'^# (.+)$',   r"<h1 style='color:#60a5fa; font-size:20px; font-weight:700; margin:20px 0 10px 0;'>\1</h1>", text, flags=re.MULTILINE)
+
+        # Horizontal rules
+        text = re.sub(r'^(?:---|\*\*\*|___)\s*$', r"<hr style='border:none; border-top:1px solid #334155; margin:12px 0;'>", text, flags=re.MULTILINE)
 
         # Blockquotes
-        text = re.sub(r'^&gt; (.+)$', r"<blockquote style='border-left: 3px solid #60a5fa; padding-left: 12px; color: #cbd5e1; margin: 8px 0px; font-style: italic;'>\1</blockquote>", text, flags=re.MULTILINE)
+        text = re.sub(
+            r'^&gt; (.+)$',
+            r"<blockquote style='border-left:3px solid #60a5fa; padding-left:12px; color:#cbd5e1; margin:8px 0; font-style:italic;'>\1</blockquote>",
+            text, flags=re.MULTILINE
+        )
+
+        # Tables  |col|col|
+        def render_table(m: re.Match) -> str:
+            rows = [r.strip() for r in m.group(0).strip().splitlines() if r.strip()]
+            html_rows = []
+            for i, row in enumerate(rows):
+                if re.match(r'^[\|\s\-:]+$', row):
+                    continue
+                cells = [c.strip() for c in row.strip('|').split('|')]
+                tag = 'th' if i == 0 else 'td'
+                style = "style='padding:6px 12px; border:1px solid #334155; color:#e2e8f0;'"
+                html_rows.append('<tr>' + ''.join(f'<{tag} {style}>{c}</{tag}>' for c in cells) + '</tr>')
+            return (
+                "<table style='border-collapse:collapse; margin:8px 0; font-size:14px;'>"
+                + ''.join(html_rows)
+                + "</table>"
+            )
+        text = re.sub(r'((?:^\|.+\|\s*\n?)+)', render_table, text, flags=re.MULTILINE)
+
+        # Numbered lists — group consecutive items into one <ol>
+        def render_ol(m: re.Match) -> str:
+            items = re.findall(r'^\d+\. (.+)$', m.group(0), flags=re.MULTILINE)
+            lis = ''.join(f'<li style="margin-left:20px; margin-bottom:4px;">{item}</li>' for item in items)
+            return f"<ol style='padding:0; margin:4px 0;'>{lis}</ol>"
+        text = re.sub(r'((?:^\d+\. .+\n?)+)', render_ol, text, flags=re.MULTILINE)
+
+        # Bullet lists — group consecutive items into one <ul>
+        def render_ul(m: re.Match) -> str:
+            items = re.findall(r'^\s*[-*] (.+)$', m.group(0), flags=re.MULTILINE)
+            lis = ''.join(f'<li style="margin-left:20px; margin-bottom:4px;">{item}</li>' for item in items)
+            return f"<ul style='list-style-type:disc; padding:0; margin:4px 0;'>{lis}</ul>"
+        text = re.sub(r'((?:^\s*[-*] .+\n?)+)', render_ul, text, flags=re.MULTILINE)
 
         # Links
-        text = re.sub(r'\[(.+?)\]\((.+?)\)', r'<a href="\2" style="color: #60a5fa; text-decoration: underline;">\1</a>', text)
+        text = re.sub(r'\[(.+?)\]\((.+?)\)', r'<a href="\2" style="color:#60a5fa; text-decoration:underline;">\1</a>', text)
 
-        # Newlines (outside of pre blocks)
+        # Restore escaped characters
+        text = re.sub(r'\x01(\d+)\x01', lambda m: chr(int(m.group(1))), text)
+
+        # Restore code blocks
+        def restore_code(m: re.Match) -> str:
+            return code_blocks[int(m.group(1))]
+        text = re.sub(r'\x00CODE(\d+)\x00', restore_code, text)
+
+        # Newlines to <br> (skip inside block elements)
         text = re.sub(r'\n', '<br>', text)
 
         return text

@@ -1,5 +1,6 @@
-# AtlasAI: A high-performance reasoning assistant with memory and web search capabilities
-# i think the best model is qwen2.5 or qwen3, but you can use any gguf model you like. best if its a reasoning model.
+# AtlasAI: A high-performance reasoning assistant with memory and web search capabilities.
+# i think the best model is qwen2.5 or qwen3, but you can use any gguf model you like.
+# Best if its a reasoning model, if not a reasoning model good luck on the system prompt.
 import json
 import math
 import os
@@ -52,11 +53,6 @@ try:
 except Exception:
     Qt = QTimer = Signal = QThread = QApplication = QWidget = QVBoxLayout = QHBoxLayout = QLabel = QLineEdit = QPushButton = QScrollArea = QMenuBar = QAction = QTextEdit = QDialog = QFileDialog = QInputDialog = None
     _HAS_QT = False
-
-
-# ============================================================================
-# User Warning System - Display helpful messages for common failure scenarios
-# ============================================================================
 
 class UserWarning:
     """Centralized warning system for user-friendly error messages."""
@@ -201,7 +197,8 @@ After installing, restart Atlas.
 
 
 # Prefiring the GPU can help reduce latency on the first query, so we do a quick check here to see if we can use it and set the default number of layers accordingly.
-# Prefiring n_ctx window to set automatically based on available VRAM or system RAM, with a safety buffer to avoid OOM crashes. This is a best-effort approach and may not be perfect, but it should help optimize the default settings for most users without requiring manual configuration.
+# Prefiring n_ctx window to set automatically based on available VRAM or system RAM, with a safety buffer to avoid OOM crashes.
+# This is a best-effort approach and may not be perfect, but it should help optimize the default settings for most users without requiring manual configuration.
 def _auto_detect_gpu_layers() -> int:
     env_layers = os.environ.get("ATLASAI_GPU_LAYERS")
     if env_layers:
@@ -340,8 +337,8 @@ def _check_system_resources() -> Dict[str, Any]:
         home_dir = pathlib.Path.home()
         stat = shutil.disk_usage(home_dir)
         resources["disk_free_mb"] = stat.free // (1024 * 1024)
-        if resources["disk_free_mb"] < 1024:  # Less than 1GB
-            resources["warnings"].append("Low disk space (less than 1GB free)")
+        if resources["disk_free_mb"] < 2048:  # Less than 2GB
+            resources["warnings"].append("Low disk space (less than 2GB free)")
     except Exception:
         pass
     

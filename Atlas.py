@@ -53,6 +53,153 @@ except Exception:
     Qt = QTimer = Signal = QThread = QApplication = QWidget = QVBoxLayout = QHBoxLayout = QLabel = QLineEdit = QPushButton = QScrollArea = QMenuBar = QAction = QTextEdit = QDialog = QFileDialog = QInputDialog = None
     _HAS_QT = False
 
+
+# ============================================================================
+# User Warning System - Display helpful messages for common failure scenarios
+# ============================================================================
+
+class UserWarning:
+    """Centralized warning system for user-friendly error messages."""
+    
+    @staticmethod
+    def warn(title: str, message: str, severity: str = "WARNING") -> None:
+        """Print a formatted warning message to the user."""
+        print(f"\n{'=' * 70}")
+        print(f"[{severity}] {title}")
+        print(f"{'-' * 70}")
+        print(message)
+        print(f"{'=' * 70}\n")
+    
+    @staticmethod
+    def warn_insufficient_ram(available_mb: int, required_mb: int) -> None:
+        """Warn when there's not enough RAM for the model context."""
+        message = f"""
+Not enough system RAM available for optimal performance.
+  • Available: {available_mb} MB
+  • Recommended: {required_mb} MB
+  • Shortfall: {required_mb - available_mb} MB
+
+⚠️  Atlas will use a smaller context window to avoid crashes.
+    This may reduce the quality of responses.
+
+Solutions:
+  • Close other applications to free up memory
+  • Reduce background processes
+  • Load a smaller model
+  • Set ATLASAI_CTX_SIZE environment variable to override
+"""
+        UserWarning.warn("Insufficient RAM", message.strip(), "WARNING")
+    
+    @staticmethod
+    def warn_model_too_large(model_size_mb: int, available_vram_mb: int) -> None:
+        """Warn when model file is larger than available VRAM."""
+        message = f"""
+The model file is larger than available GPU memory.
+  • Model size: {model_size_mb} MB
+  • GPU VRAM available: {available_vram_mb} MB
+  • Shortfall: {model_size_mb - available_vram_mb} MB
+
+⚠️  The model will be loaded to CPU, which is MUCH slower.
+    GPU acceleration will not be available.
+
+Solutions:
+  • Use a smaller/quantized model (e.g., Q4 instead of Q8)
+  • Upgrade GPU or use a machine with more VRAM
+  • Free up GPU memory (close other GPU apps)
+"""
+        UserWarning.warn("Model Larger Than GPU Memory", message.strip(), "WARNING")
+    
+    @staticmethod
+    def warn_gpu_unavailable() -> None:
+        """Warn when GPU is not available for acceleration."""
+        message = """
+GPU acceleration is not available or disabled.
+  • Models will run on CPU (slow)
+  • NVIDIA GPU detected but CUDA not working
+  • Set ATLASAI_GPU_LAYERS=0 to use CPU intentionally
+
+To enable GPU acceleration:
+  • Install CUDA Toolkit matching your GPU
+  • Install cuDNN libraries
+  • Reinstall llama-cpp-python with: pip install --force-reinstall llama-cpp-python
+  • Set CUDA_PATH environment variable
+"""
+        UserWarning.warn("GPU Acceleration Disabled", message.strip(), "WARNING")
+    
+    @staticmethod
+    def warn_embedding_model_failed() -> None:
+        """Warn when embedding model fails to load."""
+        message = """
+Failed to load the sentence transformer model.
+  • Falling back to simple embedding (reduced quality)
+  • Memory retrieval will be less accurate
+
+This is usually due to:
+  • First time downloading the model (will retry)
+  • Internet connection issues
+  • Low disk space for cache
+
+Atlas will continue working with degraded memory quality.
+"""
+        UserWarning.warn("Embedding Model Load Failed", message.strip(), "WARNING")
+    
+    @staticmethod
+    def warn_no_disk_space() -> None:
+        """Warn when there's not enough disk space."""
+        message = """
+Low disk space detected.
+  • Memory and chat history may fail to save
+  • Model file may be incomplete
+
+Free up disk space:
+  • Delete old downloads or caches
+  • Clear temporary files
+  • Remove unused models from ~/Documents/Ai_Models/
+"""
+        UserWarning.warn("Low Disk Space", message.strip(), "WARNING")
+    
+    @staticmethod
+    def warn_model_not_found(model_path: str) -> None:
+        """Warn when model file is not found."""
+        message = f"""
+Model file not found: {model_path}
+
+Possible solutions:
+  • Check the path is correct
+  • Verify the file exists
+  • Download the model from HuggingFace
+  • Place GGUF models in: ~/Documents/Ai_Models/
+  • Use: !loadmodel <path> to load a different model
+
+Current search directory: {MODEL_SEARCH_DIR}
+Run !help for more commands.
+"""
+        UserWarning.warn("Model Not Found", message.strip(), "WARNING")
+    
+    @staticmethod
+    def warn_llama_cpp_import_failed() -> None:
+        """Warn when llama-cpp-python is not installed."""
+        message = """
+llama-cpp-python is not installed.
+
+Install it with:
+  pip install llama-cpp-python
+
+Or for GPU support:
+  # NVIDIA CUDA
+  pip install llama-cpp-python[cuda]
+  
+  # AMD ROCm  
+  pip install llama-cpp-python[rocm]
+  
+  # Apple Metal
+  pip install llama-cpp-python[metal]
+
+After installing, restart Atlas.
+"""
+        UserWarning.warn("Missing llama-cpp-python", message.strip(), "ERROR")
+
+
 # Prefiring the GPU can help reduce latency on the first query, so we do a quick check here to see if we can use it and set the default number of layers accordingly.
 # Prefiring n_ctx window to set automatically based on available VRAM or system RAM, with a safety buffer to avoid OOM crashes. This is a best-effort approach and may not be perfect, but it should help optimize the default settings for most users without requiring manual configuration.
 def _auto_detect_gpu_layers() -> int:
@@ -78,9 +225,10 @@ def _auto_detect_gpu_layers() -> int:
 def _auto_detect_context_size(safety_buffer_mb: int = 512) -> int:
     try:
         import psutil
-        print(f"[Atlas] psutil available: {psutil.virtual_memory().available // (1024*1024)}MB free RAM")
+        free_mb = psutil.virtual_memory().available // (1024*1024)
+        print(f"[Atlas] Available RAM: {free_mb}MB")
     except Exception as e:
-        print(f"[Atlas] psutil branch failed: {e}")
+        print(f"[Atlas] psutil check failed: {e}")
     env_ctx = os.environ.get("ATLASAI_CTX_SIZE")
     if env_ctx:
         try:
@@ -103,7 +251,10 @@ def _auto_detect_context_size(safety_buffer_mb: int = 512) -> int:
             n_layers = 32
             mb_per_token = (n_layers * 2 * 128) / 1024  # key + value, head_dim=128
             max_tokens = int(available_mb / mb_per_token)
-            return max(4096, min(max_tokens, 32768))
+            result_ctx = max(4096, min(max_tokens, 32768))
+            if available_mb < 2000:  # Less than 2GB free
+                UserWarning.warn_insufficient_ram(available_mb, 4000)
+            return result_ctx
     except Exception:
         pass
     # Fall back to system RAM (CPU path) - much more conservative
@@ -113,11 +264,15 @@ def _auto_detect_context_size(safety_buffer_mb: int = 512) -> int:
         available_mb = free_mb - safety_buffer_mb
         if available_mb > 0:
             max_tokens = int((available_mb / 0.5) * 1024)
-            print(f"[Atlas] calculated max_tokens: {max_tokens}")
-            return max(4096, min(max_tokens, 32768))  # cap at 32k for CPU
+            print(f"[Atlas] Calculated context size: {max_tokens} tokens")
+            result_ctx = max(4096, min(max_tokens, 32768))  # cap at 32k for CPU
+            # Warn if available RAM is less than 4GB
+            if free_mb < 4096:
+                UserWarning.warn_insufficient_ram(free_mb, 8192)
+            return result_ctx
     except Exception:
         pass
-    print("[Atlas] fell through to default context size")
+    print("[Atlas] Using default context size (16384 tokens)")
     return 16384
 
 MEMORY_DIR = os.path.join(pathlib.Path.home(), ".AtlasAI")
@@ -130,7 +285,7 @@ EMBED_DIM = 384
 SEARXNG_URL = os.environ.get("SEARXNG_URL")
 SEARXNG_API_KEY = os.environ.get("SEARXNG_API_KEY")
 DUCKDUCKGO_API = "https://duckduckgo.com/"
-DUCKDUCKGO_TIMEOUT = 15
+WEBSEARCH_TIMEOUT = 15
 HALF_LIFE_SECONDS = 60 * 60 * 24 * 7
 DEFAULT_GPU_LAYERS = _auto_detect_gpu_layers()
 ENABLE_AUTO_MEMORY = os.environ.get("ATLASAI_AUTO_MEMORY", "1") == "1"
@@ -157,6 +312,53 @@ def load_markdown_file(filename: str) -> str:
             except Exception:
                 return ""
     return ""
+
+
+def _check_system_resources() -> Dict[str, Any]:
+    """Check available system resources and return a dict of resource info."""
+    resources = {
+        "ram_free_mb": 0,
+        "disk_free_mb": 0,
+        "vram_free_mb": 0,
+        "has_gpu": False,
+        "warnings": []
+    }
+    
+    # Check RAM
+    try:
+        import psutil
+        vm = psutil.virtual_memory()
+        resources["ram_free_mb"] = vm.available // (1024 * 1024)
+        if resources["ram_free_mb"] < 2048:  # Less than 2GB
+            resources["warnings"].append("Low RAM (less than 2GB free)")
+    except Exception:
+        pass
+    
+    # Check disk space
+    try:
+        import shutil
+        home_dir = pathlib.Path.home()
+        stat = shutil.disk_usage(home_dir)
+        resources["disk_free_mb"] = stat.free // (1024 * 1024)
+        if resources["disk_free_mb"] < 1024:  # Less than 1GB
+            resources["warnings"].append("Low disk space (less than 1GB free)")
+    except Exception:
+        pass
+    
+    # Check GPU/VRAM
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=memory.free", "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=5
+        )
+        if result.returncode == 0:
+            resources["vram_free_mb"] = int(result.stdout.strip())
+            resources["has_gpu"] = True
+    except Exception:
+        pass
+    
+    return resources
 
 
 # new system prompt taking from a file instead of hardcoding it here, with a fallback to the old prompt if the file is not found or cannot be read.
@@ -217,9 +419,11 @@ class MemoryStore:
         if _HAS_SENTENCE_TRANSFORMERS:
             try:
                 self.model = SentenceTransformer(self.embed_model_name)
-            except Exception:
+            except Exception as e:
                 self.model = None
                 self.use_fallback = True
+                self.last_error = str(e)
+                UserWarning.warn_embedding_model_failed()
         else:
             self.use_fallback = True
 
@@ -360,7 +564,6 @@ def extract_json_text(text: str) -> str:
             if c == '"':
                 in_string = not in_string
                 continue
-                add_memory_if_relevant 
             if in_string:
                 continue
             if c in openers:
@@ -422,7 +625,7 @@ def _searxng_search(query: str, max_results: int = 4) -> Optional[Dict[str, Any]
         if SEARXNG_API_KEY:
             headers["Authorization"] = f"Bearer {SEARXNG_API_KEY}"
         
-        response = requests.get(SEARXNG_URL, params=params, headers=headers, timeout=DUCKDUCKGO_TIMEOUT)
+        response = requests.get(SEARXNG_URL, params=params, headers=headers, timeout=WEBSEARCH_TIMEOUT)
         response.raise_for_status()
         data = response.json()
     except Exception:
@@ -463,7 +666,7 @@ def duckduckgo_search(query: str, max_results: int = 4) -> Dict[str, Any]:
             "skip_disambig": "1",
             "t": "atlasai",
         }
-        response = requests.get(DUCKDUCKGO_API, params=params, timeout=DUCKDUCKGO_TIMEOUT)
+        response = requests.get(DUCKDUCKGO_API, params=params, timeout=WEBSEARCH_TIMEOUT)
         response.raise_for_status()
         data = response.json()
     except Exception as exc:
@@ -518,7 +721,45 @@ class AtlasAI:
         if not model_path:
             raise ValueError("Model path is required to load a model.")
         if Llama is None:
+            UserWarning.warn_llama_cpp_import_failed()
             raise ImportError("Atlas requires llama-cpp-python. Install it with: pip install llama-cpp-python")
+        
+        # Check if model file exists
+        if not os.path.exists(model_path):
+            UserWarning.warn_model_not_found(model_path)
+            raise FileNotFoundError(f"Model not found: {model_path}")
+        
+        # Get model file size
+        try:
+            model_size_mb = os.path.getsize(model_path) // (1024 * 1024)
+            print(f"[Atlas] Model file size: {model_size_mb} MB")
+        except Exception as e:
+            print(f"[Atlas] Could not determine model size: {e}")
+            model_size_mb = 0
+        
+        # Check available VRAM and warn if model is larger
+        try:
+            import subprocess
+            result = subprocess.run(
+                ["nvidia-smi", "--query-gpu=memory.free", "--format=csv,noheader,nounits"],
+                capture_output=True, text=True, timeout=5
+            )
+            if result.returncode == 0:
+                free_vram_mb = int(result.stdout.strip())
+                if model_size_mb > free_vram_mb:
+                    UserWarning.warn_model_too_large(model_size_mb, free_vram_mb)
+        except Exception:
+            pass  # nvidia-smi not available or failed
+        
+        # Check available system RAM
+        try:
+            import psutil
+            available_ram_mb = psutil.virtual_memory().available // (1024 * 1024)
+            if model_size_mb > available_ram_mb:
+                UserWarning.warn_model_too_large(model_size_mb, available_ram_mb)
+        except Exception:
+            pass
+        
         os.environ["LLAMA_CUBLAS"] = "1"
         os.environ["GGML_CUBLAS"] = "1"
         os.environ["GGML_CUDA_FORCE_CUBLAS"] = "1"
@@ -527,6 +768,11 @@ class AtlasAI:
         os.environ["OPENBLAS_NUM_THREADS"] = str(os.cpu_count() or 1)
 
         self.gpu_layers = int(os.environ.get("ATLASAI_GPU_LAYERS", DEFAULT_GPU_LAYERS))
+        
+        # Warn if GPU acceleration is disabled
+        if self.gpu_layers == 0 and DEFAULT_GPU_LAYERS == 0:
+            print("[Atlas] GPU acceleration is not enabled. Models will run on CPU (slower).")
+        
         model_kwargs = {
             "model_path": model_path,
             "n_ctx": _auto_detect_context_size(),
@@ -541,7 +787,20 @@ class AtlasAI:
             "repeat_penalty": 1.2,
         }
 
-        return Llama(**model_kwargs)
+        try:
+            print("[Atlas] Loading model... (this may take a moment)")
+            model = Llama(**model_kwargs)
+            print("[Atlas] Model loaded successfully!")
+            return model
+        except RuntimeError as e:
+            if "CUDA" in str(e) or "cuda" in str(e):
+                UserWarning.warn_gpu_unavailable()
+            raise
+        except Exception as e:
+            error_msg = str(e).lower()
+            if "out of memory" in error_msg or "oom" in error_msg:
+                UserWarning.warn_insufficient_ram(0, model_size_mb)
+            raise
 
     def _sanitize_chat_name(self, name: str) -> Optional[str]:
         if not name:
@@ -661,6 +920,7 @@ class AtlasAI:
             model_path = models[0]
 
         if not os.path.exists(model_path):
+            UserWarning.warn_model_not_found(model_path)
             return f"Model path not found: {model_path}"
 
         if self.llm is not None:
@@ -668,8 +928,25 @@ class AtlasAI:
             import gc; gc.collect()
 
         self.model_path = model_path
-        self.llm = self._load_model(model_path)
-        return f"Loaded model: {self.model_path}"
+        try:
+            self.llm = self._load_model(model_path)
+            return f"✓ Model loaded successfully: {os.path.basename(self.model_path)}"
+        except FileNotFoundError as e:
+            return f"✗ Model not found: {e}"
+        except ImportError as e:
+            return f"✗ Missing dependency: {e}"
+        except RuntimeError as e:
+            if "CUDA" in str(e):
+                return "✗ GPU error. Model will run on CPU. This will be very slow."
+            if "out of memory" in str(e).lower():
+                return f"✗ Out of memory error. Try a smaller model or close other applications."
+            return f"✗ Runtime error: {e}"
+        except Exception as e:
+            error_type = type(e).__name__
+            error_msg = str(e)
+            if "oom" in error_msg.lower() or "memory" in error_msg.lower():
+                return f"✗ Out of memory. The model is too large for available RAM/VRAM."
+            return f"✗ Failed to load model ({error_type}): {error_msg}"
 
     def handle_command(self, user: str) -> Optional[str]:
         lowered = user.lower().strip()
@@ -715,16 +992,25 @@ class AtlasAI:
         print(f"Memory: {self.memory.path}")
         print(f"Memory entries: {len(self.memory.entries)}")
         if self.memory.use_fallback:
-            print("Embedding: fallback mode")
+            print("Embedding: fallback mode (reduced quality)")
         else:
             print(f"Embedding: {self.memory.embed_model_name}")
         if self.gpu_layers > 0:
-            print(f"GPU model acceleration enabled with {self.gpu_layers} layer(s) on GPU.")
+            print(f"GPU acceleration: enabled ({self.gpu_layers} layer(s) on GPU)")
         else:
-            print("GPU model acceleration is disabled or unavailable.")
+            print("GPU acceleration: disabled (CPU mode will be slower)")
         print(f"Auto memory saving: {'enabled' if self.auto_save_memory else 'disabled'}")
+        
+        # Check system resources and display warnings
+        resources = _check_system_resources()
+        if resources["warnings"]:
+            print("\n⚠️  Resource Warnings:")
+            for warning in resources["warnings"]:
+                print(f"   • {warning}")
+        
         if not _HAS_QT:
-            print("GUI support unavailable. Install PySide6 or run with --cli for console mode.")
+            print("\nℹ️  GUI support unavailable. Install PySide6 or run with --cli for console mode.")
+        print("---")
         print("Type '!help' for commands. Start typing your question.")
         print("---")
 
@@ -823,34 +1109,43 @@ class AtlasAI:
     def _run_query(self, user: str) -> str:
         if self.llm is None:
             raise RuntimeError("No model loaded. Load a GGUF model before running queries.")
-        query, web_summary, web_sources = self._prepare_query(user)
-        retrieved = self.memory.search(query)
-        prompt = self.build_prompt(query, retrieved, web_summary=web_summary, web_sources=web_sources)
-        self.last_prompt = prompt
-        response = self.llm(
-            prompt,
-            max_tokens=1024,
-            temperature=0.1,
-            top_p=0.92,
-            repeat_penalty=1.2,
-            stop=["\nUser:", "\nAssistant:"],
-            stream=False,
-        )
-
+        
         try:
-            if isinstance(response, dict):
-                choices = response.get("choices")
-                if isinstance(choices, list) and choices:
-                    text = str(choices[0].get("text", "")).strip()
-                else:
-                    text = str(response.get("text", "")).strip()
-            else:
-                text = str(response).strip()
-        except Exception as exc:
-            text = f"[Error parsing model response: {exc}]"
+            query, web_summary, web_sources = self._prepare_query(user)
+            retrieved = self.memory.search(query)
+            prompt = self.build_prompt(query, retrieved, web_summary=web_summary, web_sources=web_sources)
+            self.last_prompt = prompt
+            
+            response = self.llm(
+                prompt,
+                max_tokens=1024,
+                temperature=0.1,
+                top_p=0.92,
+                repeat_penalty=1.2,
+                stop=["\nUser:", "\nAssistant:"],
+                stream=False,
+            )
 
-        self.last_raw_response = text
-        return text
+            try:
+                if isinstance(response, dict):
+                    choices = response.get("choices")
+                    if isinstance(choices, list) and choices:
+                        text = str(choices[0].get("text", "")).strip()
+                    else:
+                        text = str(response.get("text", "")).strip()
+                else:
+                    text = str(response).strip()
+            except Exception as exc:
+                text = f"[Error parsing model response: {exc}]"
+
+            self.last_raw_response = text
+            return text
+        except RuntimeError as e:
+            if "out of memory" in str(e).lower() or "cuda" in str(e).lower():
+                raise RuntimeError("Out of memory or GPU error during model inference")
+            raise
+        except Exception as e:
+            raise RuntimeError(f"Query execution failed: {e}")
 
     def _split_answer_details(self, text: str) -> Tuple[str, str]:
         text = text.strip()
@@ -867,12 +1162,27 @@ class AtlasAI:
         special = self._handle_special_cases(user)
         if special is not None:
             return special
-        raw = self._run_query(user)
-        answer, _ = self._split_answer_details(raw)
-        answer = self._clean_output(answer)
-        if self.auto_save_memory:
-            self._auto_save_memory(user, answer)
-        return answer
+        try:
+            raw = self._run_query(user)
+            answer, _ = self._split_answer_details(raw)
+            answer = self._clean_output(answer)
+            if self.auto_save_memory:
+                try:
+                    self._auto_save_memory(user, answer)
+                except Exception:
+                    pass
+            return answer
+        except RuntimeError as e:
+            if "out of memory" in str(e).lower():
+                return "⚠️  Out of memory! The model query was too large. Try a simpler question or close other applications."
+            return f"⚠️  Runtime error: {e}"
+        except Exception as exc:
+            error_msg = str(exc).lower()
+            if "cuda" in error_msg or "gpu" in error_msg:
+                return "⚠️  GPU error occurred. Falling back to CPU (slower)."
+            if "model" in error_msg and "not" in error_msg:
+                return "⚠️  No model loaded. Use !loadmodel to load a model first."
+            return f"⚠️  Error generating response: {exc}"
 
     def respond_with_details(self, user: str) -> Tuple[str, str]:
         if not user:
@@ -890,8 +1200,18 @@ class AtlasAI:
                 except Exception:
                     pass
             return answer, details
+        except RuntimeError as e:
+            if "out of memory" in str(e).lower():
+                msg = "⚠️  Out of memory! The model query was too large. Try a simpler question or close other applications."
+                return msg, ""
+            return f"⚠️  Runtime error: {e}", ""
         except Exception as exc:
-            return f"Error generating response: {exc}", ""
+            error_msg = str(exc).lower()
+            if "cuda" in error_msg or "gpu" in error_msg:
+                return "⚠️  GPU error occurred. Falling back to CPU (slower).", ""
+            if "model" in error_msg and "not" in error_msg:
+                return "⚠️  No model loaded. Use !loadmodel to load a model first.", ""
+            return f"⚠️  Error generating response: {exc}", ""
 
     def _handle_special_cases(self, user: str) -> Optional[str]:
         lowered = user.lower().strip()
